@@ -1,0 +1,168 @@
+#6) built sentence graph
+
+def build_sparse_sentence_graph(similarity_matrix, threshold=0.3):
+    
+    import networkx as nx
+    
+    n = similarity_matrix.shape[0]
+    
+    graph = nx.Graph()
+    
+    # add nodes
+    for i in range(n):
+        graph.add_node(i)
+    
+    # add edges only if similarity is above threshold
+    for i in range(n):
+        for j in range(i+1, n):
+            
+            if similarity_matrix[i][j] > threshold:
+                
+                graph.add_edge(i, j, weight=similarity_matrix[i][j])
+    
+    return graph
+
+graph = build_sparse_sentence_graph(similarity_matrix)
+
+
+#step 7: ranking
+
+def rank_sentences(graph):
+    
+    scores = nx.pagerank(graph)
+    
+    return scores
+
+#step 8 clustering
+
+def cluster_sentences(embeddings):
+    
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=2,
+        min_samples=1,
+        metric='euclidean'
+    )
+    
+    labels = clusterer.fit_predict(embeddings)
+    
+    return labels
+
+
+#step 9: top k 
+
+def select_top_sentences(scores, sentences, k=3):
+    
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    selected_indices = [i for i,_ in ranked[:k]]
+    
+    selected_indices = sorted(selected_indices)
+    
+    summary = [sentences[i] for i in selected_indices]
+    
+    return summary
+
+#step 10 cluster-aware
+
+def select_cluster_representatives(scores, labels, sentences):
+    
+    clusters = {}
+    
+    for i,label in enumerate(labels):
+        
+        if label == -1:
+            continue
+            
+        if label not in clusters:
+            clusters[label] = []
+            
+        clusters[label].append(i)
+    
+    selected_indices = []
+    
+    for cluster in clusters.values():
+        
+        best_sentence = max(cluster, key=lambda i: scores[i])
+        
+        selected_indices.append(best_sentence)
+    
+    selected_indices = sorted(selected_indices)
+    
+    summary = [sentences[i] for i in selected_indices]
+    
+    return summary
+
+
+#Approach 1 Global Ranking → Clustering
+
+def summarize_global_rank_then_cluster(document):
+    
+    sentences = sentence_segmentation(document)
+    
+    embeddings = generate_embeddings(sentences)
+    
+    similarity_matrix = compute_similarity_matrix(embeddings)
+    
+    graph = build_sentence_graph(similarity_matrix)
+    
+    scores = rank_sentences(graph)
+    
+    labels = cluster_sentences(embeddings)
+    
+    summary = select_cluster_representatives(scores, labels, sentences)
+    
+    return summary
+
+#Approach 2 Clustering → Ranking (Paper Method)
+
+def summarize_cluster_then_rank(document):
+    
+    sentences = sentence_segmentation(document)
+    
+    embeddings = generate_embeddings(sentences)
+    
+    similarity_matrix = compute_similarity_matrix(embeddings)
+    
+    graph = build_sentence_graph(similarity_matrix)
+    
+    labels = cluster_sentences(embeddings)
+    
+    clusters = {}
+    
+    for i,label in enumerate(labels):
+        
+        if label == -1:
+            continue
+        
+        if label not in clusters:
+            clusters[label] = []
+            
+        clusters[label].append(i)
+    
+    selected_indices = []
+    
+    for cluster in clusters.values():
+        
+        subgraph = graph.subgraph(cluster)
+        
+        scores = nx.pagerank(subgraph)
+        
+        best = max(scores, key=scores.get)
+        
+        selected_indices.append(best)
+    
+    selected_indices = sorted(selected_indices)
+    
+    summary = [sentences[i] for i in selected_indices]
+    
+    return summary
+
+
+
+summary1 = summarize_global_rank_then_cluster(document)
+
+print(summary1)
+
+summary2 = summarize_cluster_then_rank(document)
+
+print(summary2)
