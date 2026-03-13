@@ -1,0 +1,2 @@
+# GTS
+Graph based summarization 
