@@ -1,0 +1,142 @@
+You are an expert NLP researcher and ML engineer.
+
+Your task is to implement a complete end-to-end pipeline for **Topic-Aware Graph-Based Extractive Summarization** using modern deep learning techniques.
+
+The implementation must be modular, production-ready, and easy to extend.
+
+-------------------------------------
+OBJECTIVE
+-------------------------------------
+Build a pipeline that:
+1. Takes raw text documents as input
+2. Constructs a topic-aware heterogeneous graph
+3. Uses a Graph Neural Network (GNN) to learn representations
+4. Performs extractive summarization
+5. Evaluates using ROUGE metrics
+
+-------------------------------------
+REQUIREMENTS
+-------------------------------------
+
+### 1. Preprocessing
+- Sentence segmentation
+- Tokenization using HuggingFace tokenizer
+- Maintain sentence order
+
+### 2. Sentence Encoding
+- Use pretrained BERT (or similar)
+- Extract CLS embeddings for each sentence
+- Output: sentence embedding matrix (N x d)
+
+### 3. Topic Modeling
+Provide TWO implementations:
+(A) LDA (Gensim or sklearn)
+(B) Neural Topic Model (VAE-based, optional but preferred)
+
+Outputs:
+- Document-topic distribution (theta)
+- Topic embeddings (K x d)
+
+### 4. Graph Construction
+Build a heterogeneous graph with:
+
+Nodes:
+- Sentence nodes
+- Topic nodes
+
+Edges:
+- Sentence ↔ Topic (mandatory)
+    - Weight = similarity (cosine or learned)
+- Sentence ↔ Sentence (optional but include)
+
+Graph should be compatible with:
+- PyTorch Geometric OR DGL
+
+### 5. Feature Initialization
+- Sentence nodes → BERT embeddings
+- Topic nodes → topic embeddings
+
+### 6. Graph Neural Network
+- Use Graph Attention Network (GAT)
+- Multi-head attention
+- Support heterogeneous edges if possible
+
+Output:
+- Updated sentence embeddings (topic-aware)
+
+### 7. Sentence Scoring (Extractive)
+- Combine:
+    - Updated sentence embedding
+    - Global topic distribution (theta)
+- Use Feed Forward Network
+- Output score per sentence
+
+### 8. Summary Selection
+- Select top-k sentences
+- Preserve original order
+
+### 9. Loss Function
+- Binary Cross Entropy for sentence selection
+- If using Neural Topic Model:
+    - Add KL divergence + reconstruction loss
+
+### 10. Training Pipeline
+- Full training loop
+- Batch processing
+- Optimizer (Adam)
+- Learning rate scheduling (optional)
+
+### 11. Evaluation
+- Implement ROUGE-1, ROUGE-2, ROUGE-L
+- Use any standard library (rouge-score)
+- Compare predicted summary vs reference summary
+
+-------------------------------------
+IMPLEMENTATION CONSTRAINTS
+-------------------------------------
+- Use PyTorch
+- Use HuggingFace Transformers
+- Use PyTorch Geometric (preferred) or DGL
+- Code must be modular:
+    - preprocessing.py
+    - encoder.py
+    - topic_model.py
+    - graph_builder.py
+    - gnn_model.py
+    - summarizer.py
+    - train.py
+    - evaluate.py
+
+-------------------------------------
+OUTPUT FORMAT
+-------------------------------------
+Provide:
+
+1. Complete code (modular files)
+2. Clear explanation of each module
+3. Sample input + output
+4. Instructions to run the pipeline
+5. Hyperparameter suggestions
+6. Tips for improving ROUGE score
+
+-------------------------------------
+IMPORTANT NOTES
+-------------------------------------
+- Do NOT include unnecessary theory
+- Focus on implementation details
+- Ensure code is runnable
+- Avoid placeholders — give working logic
+
+-------------------------------------
+OPTIONAL (ADVANCED)
+-------------------------------------
+- Add word nodes for experimentation
+- Add abstractive decoder (Transformer)
+- Add attention visualization
+
+-------------------------------------
+
+Now generate the full implementation step by step.
+
+
+Write clean, production-quality code with proper class structures, type hints, and comments. Avoid pseudo-code.
