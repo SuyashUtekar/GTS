@@ -1,0 +1,545 @@
+# Level 1 — Post-Processing the Extractive Summary (Quickest Fix)
+
+import re
+from collections import defaultdict
+
+def resolve_dangling_references(
+    final_selection_ordered,
+    sentences,
+    article,
+    partition,
+) -> list:
+    """
+    For each selected sentence, check if it has
+    dangling references. If yes, pull the antecedent
+    sentence from the original document.
+
+    Returns: expanded selection with context sentences added.
+    """
+
+    # patterns that signal missing context
+    dangling_patterns = [
+        r'^it\s',           r'^its\s',
+        r'^they\s',         r'^their\s',
+        r'^he\s',           r'^she\s',
+        r'^this\s',         r'^these\s',
+        r'^that\s',         r'^those\s',
+        r'^such\s',         r'^the same\s',
+        r'^the said\s',     r'^the above\s',
+        r'^subject to\s',   r'^provided that\s',
+        r'^as mentioned\s', r'^as stated\s',
+        r'^as per above\s', r'^in this regard\s',
+        r'^accordingly\s',  r'^therefore\s',
+        r'^however\s',      r'^notwithstanding\s',
+        r'^in addition\s',  r'^further\s',
+        r'^the bank\s',     # dangling if bank not introduced
+    ]
+
+    selected_set     = set(final_selection_ordered)
+    context_added    = set()
+    expanded         = list(final_selection_ordered)
+
+    for node in final_selection_ordered:
+        text_lower = sentences[node]['text'].lower().strip()
+
+        is_dangling = any(
+            re.match(p, text_lower)
+            for p in dangling_patterns
+        )
+
+        if is_dangling:
+            # look at previous 1-3 sentences in document
+            for lookback in [1, 2, 3]:
+                prev_idx = node - lookback
+                if (prev_idx >= 0
+                        and prev_idx not in selected_set
+                        and prev_idx not in context_added):
+                    expanded.append(prev_idx)
+                    context_added.add(prev_idx)
+                    print(f"  Context added: S{prev_idx:03d} → "
+                          f"provides context for S{node:03d}")
+                    print(f"    S{prev_idx:03d}: "
+                          f"\"{sentences[prev_idx]['text'][:70]}...\"")
+                    break
+
+    # re-sort by document position
+    expanded_ordered = sorted(set(expanded))
+
+    print(f"\n  Original selection : {len(final_selection_ordered)}")
+    print(f"  Context sentences  : {len(context_added)}")
+    print(f"  Expanded selection : {len(expanded_ordered)}")
+
+    return expanded_ordered, context_added
+
+
+# ── Run reference resolution ───────────────────────────────────
+print("Resolving dangling references...")
+print("-" * 55)
+
+expanded_selection, context_nodes = resolve_dangling_references(
+    final_selection_ordered = final_selection_ordered,
+    sentences               = article['sentences'],
+    article                 = article,
+    partition               = partition,
+)
+
+article['expanded_selection'] = expanded_selection
+article['context_nodes']      = context_nodes
+
+
+def build_validated_extractive_summary(
+    expanded_selection,
+    context_nodes,
+    sentences,
+    partition,
+    bridge_nodes,
+    final_selection_ordered,
+) -> str:
+    """
+    Builds extractive summary with:
+    1. Context sentences injected where needed
+    2. Section headers per community
+    3. Better discourse connectives
+    4. Clause reference warnings flagged
+    """
+
+    # clause reference pattern
+    clause_ref_pattern = re.compile(
+        r'(clause|section|para|paragraph|article|'
+        r'schedule|annexure)\s*[\d\.]+',
+        re.IGNORECASE
+    )
+
+    transition_map = {
+        # community change transitions
+        "default"     : "Furthermore,",
+        "condition"   : "In this regard,",
+        "consequence" : "As a result,",
+        "obligation"  : "Additionally,",
+        "exception"   : "However,",
+        "timeline"    : "With respect to timelines,",
+        "reporting"   : "Regarding reporting requirements,",
+        "penalty"     : "With respect to non-compliance,",
+    }
+
+    summary_parts  = []
+    prev_community = None
+    transition_idx = 0
+    transitions    = list(transition_map.values())
+
+    for node in expanded_selection:
+        sent      = sentences[node]
+        curr_comm = partition.get(node, -1)
+        text      = sent['text'].strip()
+        is_context= node in context_nodes
+        is_bridge = node in bridge_nodes
+
+        # ── Flag clause references ─────────────────────────
+        clause_refs = clause_ref_pattern.findall(text)
+        if clause_refs:
+            # warn but don't remove
+            ref_str = ', '.join(
+                [f"{r[0]} {r[1]}" for r in clause_refs]
+                if isinstance(clause_refs[0], tuple)
+                else clause_refs
+            )
+
+        # ── Community boundary transition ──────────────────
+        if (prev_community is not None
+                and curr_comm != prev_community
+                and not is_context
+                and not is_bridge):
+
+            phrase = transitions[transition_idx % len(transitions)]
+            transition_idx += 1
+
+            starters = (
+                "however", "additionally", "furthermore",
+                "meanwhile", "also", "but", "yet",
+                "in", "on", "while", "although",
+                "with respect", "regarding", "as a result",
+                "notwithstanding", "subject to"
+            )
+            if not text.lower().startswith(starters):
+                text = f"{phrase} {text}"
+
+        summary_parts.append(text)
+        prev_community = curr_comm
+
+    return " ".join(summary_parts)
+
+
+# ── Build improved summary ─────────────────────────────────────
+validated_summary = build_validated_extractive_summary(
+    expanded_selection      = expanded_selection,
+    context_nodes           = context_nodes,
+    sentences               = article['sentences'],
+    partition               = partition,
+    bridge_nodes            = bridge_nodes,
+    final_selection_ordered = final_selection_ordered,
+)
+
+article['validated_summary'] = validated_summary
+
+print("\n" + "=" * 65)
+print("VALIDATED EXTRACTIVE SUMMARY (with context):")
+print("=" * 65)
+print(validated_summary)
+print(f"\nWords     : {len(validated_summary.split())}")
+print(f"Sentences : {len(expanded_selection)}")
+
+
+# Level 2 — Validate Each Sentence Before Including
+
+def is_self_contained(sentence_text) -> tuple:
+    """
+    Check if a sentence is self-contained enough
+    to appear in a summary without its surrounding context.
+
+    Returns: (is_valid, reason)
+    """
+
+    text = sentence_text.strip()
+    text_lower = text.lower()
+
+    # ── Check 1: dangling pronoun at start ────────────────
+    dangling_starts = (
+        'it ', 'its ', 'they ', 'their ', 'he ', 'she ',
+        'this ', 'these ', 'that ', 'those ', 'such ',
+        'the same ', 'the said '
+    )
+    if text_lower.startswith(dangling_starts):
+        return False, "dangling_pronoun"
+
+    # ── Check 2: incomplete condition ─────────────────────
+    incomplete_conditions = (
+        'subject to ', 'provided that ', 'provided however',
+        'notwithstanding the above', 'as mentioned above',
+        'as stated above', 'as per above', 'in this regard',
+        'in view of the above', 'accordingly,', 'therefore,'
+    )
+    if text_lower.startswith(incomplete_conditions):
+        return False, "incomplete_condition"
+
+    # ── Check 3: too short (likely fragment) ──────────────
+    if len(text.split()) < 8:
+        return False, "too_short"
+
+    # ── Check 4: broken clause reference ──────────────────
+    clause_ref = re.search(
+        r'\b(clause|section|para)\s*\d+\.\d+',
+        text_lower
+    )
+    if clause_ref:
+        return True, "has_clause_ref"      # warn but allow
+
+    # ── Check 5: ends mid-sentence (colon with no content) ─
+    if text.endswith(':'):
+        return False, "ends_with_colon"
+
+    return True, "valid"
+
+
+# ── Use in MMR selection ───────────────────────────────────────
+# add this check inside coverage_guaranteed_mmr()
+# after picking best node:
+
+def coverage_guaranteed_mmr_validated(
+    community_candidates,
+    communities,
+    embeddings,
+    final_scores,
+    sentences,                  # ADD THIS PARAMETER
+    total_budget,
+    mmr_lambda = 0.6,
+):
+    selected   = []
+    used_nodes = set()
+    skipped    = []
+
+    # Phase 1: guaranteed coverage
+    for comm_id in sorted(
+        community_candidates,
+        key = lambda c: -sum(
+            final_scores.get(n, 0)
+            for n in community_candidates[c]
+        )
+    ):
+        candidates = community_candidates[comm_id]
+
+        # find best VALID sentence in community
+        for node in sorted(
+            [n for n in candidates if n not in used_nodes],
+            key     = lambda n: final_scores.get(n, 0),
+            reverse = True
+        ):
+            is_valid, reason = is_self_contained(
+                sentences[node]['text']
+            )
+
+            if is_valid or reason == "has_clause_ref":
+                selected.append(node)
+                used_nodes.add(node)
+                print(f"  Community {comm_id}: "
+                      f"S{node:03d} ({reason})")
+                break
+            else:
+                skipped.append((node, comm_id, reason))
+                print(f"  Community {comm_id}: "
+                      f"S{node:03d} skipped ({reason})")
+
+    # Phase 2: MMR fill with validity check
+    remaining_budget = total_budget - len(selected)
+    all_candidates   = [
+        n for comm in community_candidates.values()
+        for n in comm
+        if n not in used_nodes
+    ]
+
+    while len(selected) < total_budget and all_candidates:
+        selected_embs = embeddings[selected]
+        best_node     = None
+        best_score    = -np.inf
+
+        for node in all_candidates:
+            is_valid, reason = is_self_contained(
+                sentences[node]['text']
+            )
+            if not is_valid and reason != "has_clause_ref":
+                continue                # skip invalid sentences
+
+            node_emb   = embeddings[node].reshape(1, -1)
+            relevance  = final_scores.get(node, 0.0)
+            sims       = cosine_similarity(
+                             node_emb, selected_embs)[0]
+            redundancy = float(sims.max())
+            mmr_score  = (mmr_lambda * relevance
+                         - (1 - mmr_lambda) * redundancy)
+
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_node  = node
+
+        if best_node is not None:
+            selected.append(best_node)
+            all_candidates.remove(best_node)
+        else:
+            break
+
+    print(f"\n  Skipped (not self-contained): {len(skipped)}")
+    for node, comm, reason in skipped:
+        print(f"    S{node:03d} comm={comm} reason={reason}")
+
+    return selected
+
+
+# Level 3 — Add Section Headers for Readability
+
+
+def build_structured_summary(
+    expanded_selection,
+    context_nodes,
+    sentences,
+    partition,
+    communities,
+    topic_importance,
+    bridge_nodes,
+    topic_model,
+) -> str:
+    """
+    Builds summary with section headers per community.
+    Each community gets a header derived from
+    its BERTopic keywords.
+    """
+
+    # ── Build community → header mapping ──────────────────
+    comm_headers = {}
+    for comm_id in communities:
+        # get dominant topic from community members
+        topic_ids = [
+            sentences[n]['topic_id']
+            for n in communities[comm_id]
+            if n < len(sentences)
+            and sentences[n]['topic_id'] != -1
+        ]
+
+        if not topic_ids:
+            comm_headers[comm_id] = f"Section {comm_id + 1}"
+            continue
+
+        from collections import Counter
+        dominant_tid = Counter(topic_ids).most_common(1)[0][0]
+
+        # get keywords for this topic
+        try:
+            keywords = topic_model.get_topic(dominant_tid)
+            top_kws  = [w.title() for w, _ in keywords[:3]]
+            header   = " / ".join(top_kws)
+        except Exception:
+            header   = f"Section {comm_id + 1}"
+
+        comm_headers[comm_id] = header
+
+    # ── Build structured summary ───────────────────────────
+    sections       = defaultdict(list)
+    prev_community = None
+
+    for node in expanded_selection:
+        curr_comm = partition.get(node, -1)
+        text      = sentences[node]['text'].strip()
+        is_bridge = node in bridge_nodes
+        is_context= node in context_nodes
+
+        # tag context sentences visually
+        if is_context:
+            text = f"[Context] {text}"
+
+        sections[curr_comm].append({
+            "node"      : node,
+            "text"      : text,
+            "is_bridge" : is_bridge,
+            "is_context": is_context,
+        })
+
+    # ── Render structured text ─────────────────────────────
+    output_parts = []
+
+    # sort sections by topic importance
+    sorted_comms = sorted(
+        sections.keys(),
+        key     = lambda c: topic_importance.get(c, 0),
+        reverse = True
+    )
+
+    for comm_id in sorted_comms:
+        header    = comm_headers.get(comm_id,
+                                     f"Section {comm_id+1}")
+        ti        = topic_importance.get(comm_id, 0)
+        sents     = sections[comm_id]
+
+        # section header
+        output_parts.append(
+            f"\n[{header.upper()}]  "
+            f"(relevance: {ti:.3f})"
+        )
+        output_parts.append("-" * 55)
+
+        for item in sents:
+            prefix = "→ " if item['is_bridge'] else "• "
+            output_parts.append(f"{prefix}{item['text']}")
+
+    return "\n".join(output_parts)
+
+
+# ── Build structured summary ───────────────────────────────────
+structured_summary = build_structured_summary(
+    expanded_selection = expanded_selection,
+    context_nodes      = context_nodes,
+    sentences          = article['sentences'],
+    partition          = partition,
+    communities        = communities,
+    topic_importance   = topic_importance,
+    bridge_nodes       = bridge_nodes,
+    topic_model        = topic_model,
+)
+
+article['structured_summary'] = structured_summary
+
+print("\n" + "=" * 65)
+print("STRUCTURED EXTRACTIVE SUMMARY:")
+print("=" * 65)
+print(structured_summary)
+
+
+Level 4 — Validate Clause References
+
+
+def validate_clause_references(
+    expanded_selection,
+    sentences,
+    article_full_sentences,
+) -> dict:
+    """
+    Find all clause references in selected sentences.
+    Check if referenced clause is also selected.
+    Flag missing ones for manual review.
+    """
+
+    clause_pattern = re.compile(
+        r'(clause|section|para(?:graph)?|article|'
+        r'schedule|annexure)\s*([\d\.]+)',
+        re.IGNORECASE
+    )
+
+    selected_set    = set(expanded_selection)
+    validation_log  = []
+
+    print("Clause reference validation:")
+    print("-" * 55)
+
+    for node in expanded_selection:
+        text  = sentences[node]['text']
+        refs  = clause_pattern.findall(text)
+
+        if not refs:
+            continue
+
+        for ref_type, ref_num in refs:
+            print(f"\n  S{node:03d} references: "
+                  f"{ref_type} {ref_num}")
+            print(f"  Text: \"{text[:80]}...\"")
+
+            # check if any selected sentence
+            # contains this clause number
+            found_in_selection = False
+            for sel_node in selected_set:
+                if sel_node == node:
+                    continue
+                sel_text = sentences[sel_node]['text']
+                if ref_num in sel_text:
+                    found_in_selection = True
+                    print(f"  ✓ Referenced clause found "
+                          f"in S{sel_node:03d}")
+                    break
+
+            if not found_in_selection:
+                print(f"  ✗ WARNING: {ref_type} {ref_num} "
+                      f"not in summary → reader lacks context")
+                validation_log.append({
+                    "sentence"  : node,
+                    "ref_type"  : ref_type,
+                    "ref_num"   : ref_num,
+                    "resolved"  : False,
+                })
+
+    resolved   = sum(1 for v in validation_log if v['resolved'])
+    unresolved = sum(1 for v in validation_log if not v['resolved'])
+
+    print(f"\n  Total clause references : "
+          f"{len(validation_log)}")
+    print(f"  Resolved in summary     : {resolved}")
+    print(f"  Unresolved (warnings)   : {unresolved}")
+
+    if unresolved > 0:
+        print(f"\n  ⚠ Consider increasing summary budget")
+        print(f"    to include referenced clauses OR")
+        print(f"    use abstractive step to paraphrase them away")
+
+    return validation_log
+
+
+# ── Run clause validation ──────────────────────────────────────
+validation_log = validate_clause_references(
+    expanded_selection      = expanded_selection,
+    sentences               = article['sentences'],
+    article_full_sentences  = article['sentences'],
+)
+
+article['validation_log'] = validation_log
+
+
+
+
+
+
+
