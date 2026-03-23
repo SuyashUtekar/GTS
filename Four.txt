@@ -1,0 +1,503 @@
+Check Extractive Summary Token Length
+
+# ── BART has 1024 token limit ──────────────────────────────────
+# Extractive summary may exceed this for 22 sentences
+
+extractive_tokens = tokenizer(
+    extractive_summary,
+    return_tensors = 'pt',
+    truncation     = False
+)
+n_tokens = extractive_tokens['input_ids'].shape[1]
+
+print(f"Extractive summary stats:")
+print(f"  Sentences : {len(final_selection_ordered)}")
+print(f"  Words     : {len(extractive_summary.split())}")
+print(f"  Tokens    : {n_tokens}")
+print(f"  Model max : {tokenizer.model_max_length}")
+print(f"  Fits      : {'✓ YES' if n_tokens <= 1024 else '✗ NO — need chunking'}")
+
+
+Strategy A — Single Pass (if tokens ≤ 1024)
+
+def abstractive_single_pass(
+    extractive_text,
+    summarizer,
+    tokenizer,
+    min_length = 60,
+    max_length = 180,
+) -> dict:
+    """
+    Single pass abstractive summarization.
+    Works when extractive summary fits in model context.
+    """
+    n_tokens = tokenizer(
+        extractive_text,
+        return_tensors = 'pt',
+        truncation     = False
+    )['input_ids'].shape[1]
+
+    if n_tokens > tokenizer.model_max_length:
+        print(f"  ✗ Too long ({n_tokens} tokens). Use chunked strategy.")
+        return None
+
+    result = summarizer(
+        extractive_text,
+        min_length          = min_length,
+        max_length          = max_length,
+        num_beams           = 4,
+        length_penalty      = 2.0,   # encourages longer output
+        early_stopping      = True,
+        no_repeat_ngram_size= 3,     # prevents repetition
+    )
+
+    return {
+        "strategy"          : "single_pass",
+        "abstractive_summary": result[0]['summary_text'],
+        "input_tokens"      : n_tokens,
+    }
+
+
+Strategy B — Topic-Chunked Pass (if tokens > 1024)
+
+def abstractive_chunked_pass(
+    final_selection_ordered,
+    sentences,
+    partition,
+    communities,
+    topic_importance,
+    summarizer,
+    tokenizer,
+    max_chunk_tokens = 900,
+    min_length       = 30,
+    max_length       = 80,
+) -> dict:
+    """
+    Summarize per topic community chunk separately,
+    then merge all topic summaries into final abstract.
+
+    Flow:
+      Extractive sentences grouped by community
+           ↓
+      BART summarizes each community chunk
+           ↓
+      All community summaries merged
+           ↓
+      Final BART pass on merged text
+    """
+
+    # ── Group selected sentences by community ─────────────────
+    comm_sentences = defaultdict(list)
+    for node in final_selection_ordered:
+        comm_id = partition.get(node, -1)
+        comm_sentences[comm_id].append(
+            sentences[node]['text']
+        )
+
+    # sort communities by topic importance (most → least)
+    sorted_comms = sorted(
+        comm_sentences.keys(),
+        key     = lambda c: topic_importance.get(c, 0),
+        reverse = True
+    )
+
+    print(f"Processing {len(sorted_comms)} topic chunks...")
+    print("-" * 55)
+
+    # ── Summarize each community chunk ────────────────────────
+    community_summaries = {}
+
+    for comm_id in sorted_comms:
+        chunk_text  = " ".join(comm_sentences[comm_id])
+        n_tokens    = tokenizer(
+            chunk_text,
+            return_tensors = 'pt',
+            truncation     = False
+        )['input_ids'].shape[1]
+
+        ti   = topic_importance.get(comm_id, 0)
+        print(f"\n  Community {comm_id}  "
+              f"(importance={ti:.3f}, "
+              f"sentences={len(comm_sentences[comm_id])}, "
+              f"tokens={n_tokens})")
+
+        if n_tokens < 30:
+            # too short to summarize → keep as is
+            community_summaries[comm_id] = chunk_text
+            print(f"  → Too short, kept as is")
+            continue
+
+        # truncate if exceeds model max
+        if n_tokens > max_chunk_tokens:
+            chunk_text = tokenizer.decode(
+                tokenizer(
+                    chunk_text,
+                    max_length = max_chunk_tokens,
+                    truncation = True
+                )['input_ids'],
+                skip_special_tokens = True
+            )
+            print(f"  → Truncated to {max_chunk_tokens} tokens")
+
+        # scale output length by topic importance
+        chunk_max_len = max(
+            40,
+            int(max_length * ti * len(sorted_comms))
+        )
+        chunk_max_len = min(chunk_max_len, max_length)
+
+        result = summarizer(
+            chunk_text,
+            min_length           = min_length,
+            max_length           = chunk_max_len,
+            num_beams            = 4,
+            length_penalty       = 1.5,
+            early_stopping       = True,
+            no_repeat_ngram_size = 3,
+        )
+
+        community_summaries[comm_id] = result[0]['summary_text']
+        print(f"  → \"{result[0]['summary_text'][:80]}...\"")
+
+    # ── Merge all community summaries ─────────────────────────
+    merged = " ".join([
+        community_summaries[cid]
+        for cid in sorted_comms
+        if cid in community_summaries
+    ])
+
+    print(f"\nMerging {len(community_summaries)} topic summaries...")
+    print(f"  Merged text tokens: "
+          f"{tokenizer(merged, return_tensors='pt', truncation=False)['input_ids'].shape[1]}")
+
+    # ── Final fusion pass ─────────────────────────────────────
+    merged_tokens = tokenizer(
+        merged,
+        return_tensors = 'pt',
+        truncation     = False
+    )['input_ids'].shape[1]
+
+    if merged_tokens > tokenizer.model_max_length:
+        merged = tokenizer.decode(
+            tokenizer(
+                merged,
+                max_length = tokenizer.model_max_length,
+                truncation = True
+            )['input_ids'],
+            skip_special_tokens = True
+        )
+
+    final_result = summarizer(
+        merged,
+        min_length           = 80,
+        max_length           = 220,
+        num_beams            = 4,
+        length_penalty       = 2.0,
+        early_stopping       = True,
+        no_repeat_ngram_size = 3,
+    )
+
+    return {
+        "strategy"            : "topic_chunked",
+        "community_summaries" : community_summaries,
+        "merged_text"         : merged,
+        "abstractive_summary" : final_result[0]['summary_text'],
+        "n_chunks"            : len(sorted_comms),
+    }
+
+
+Run Both Strategies
+
+print("=" * 65)
+print("ABSTRACTIVE SUMMARIZATION")
+print("=" * 65)
+
+# decide strategy based on token count
+if n_tokens <= tokenizer.model_max_length:
+    print("Strategy: Single Pass")
+    print("-" * 65)
+    abstractive_result = abstractive_single_pass(
+        extractive_text = extractive_summary,
+        summarizer      = summarizer,
+        tokenizer       = tokenizer,
+        min_length      = 80,
+        max_length      = 200,
+    )
+else:
+    print("Strategy: Topic-Chunked Pass")
+    print("-" * 65)
+    abstractive_result = abstractive_chunked_pass(
+        final_selection_ordered = final_selection_ordered,
+        sentences               = article['sentences'],
+        partition               = partition,
+        communities             = communities,
+        topic_importance        = topic_importance,
+        summarizer              = summarizer,
+        tokenizer               = tokenizer,
+        max_chunk_tokens        = 900,
+        min_length              = 30,
+        max_length              = 80,
+    )
+
+abstractive_summary = abstractive_result['abstractive_summary']
+article['abstractive_summary'] = abstractive_summary
+
+print(f"\n✓ Abstractive summary generated")
+print(f"  Strategy : {abstractive_result['strategy']}")
+print(f"  Words    : {len(abstractive_summary.split())}")
+
+
+Evaluate Both Summaries
+
+# ── ROUGE for both ────────────────────────────────────────────
+scorer = rouge_scorer_lib.RougeScorer(
+    ['rouge1', 'rouge2', 'rougeL'],
+    use_stemmer = True
+)
+
+rouge_extractive   = scorer.score(
+    article['reference'], extractive_summary
+)
+rouge_abstractive  = scorer.score(
+    article['reference'], abstractive_summary
+)
+
+# ── BERTScore for both ────────────────────────────────────────
+print("Computing BERTScores...")
+_, _, bert_f1_ext = bert_score_fn(
+    cands   = [extractive_summary],
+    refs    = [article['reference']],
+    lang    = "en", verbose = False
+)
+_, _, bert_f1_abs = bert_score_fn(
+    cands   = [abstractive_summary],
+    refs    = [article['reference']],
+    lang    = "en", verbose = False
+)
+
+# ── Fluency proxy: avg sentence length variance ───────────────
+def fluency_score(text):
+    """
+    Proxy for fluency:
+    Lower variance in sentence length = more fluent.
+    Extractive summaries have high variance
+    (sentences from different parts of doc).
+    Abstractive summaries are more uniform.
+    """
+    sents  = text.split('.')
+    sents  = [s.strip() for s in sents if len(s.strip()) > 0]
+    lens   = [len(s.split()) for s in sents]
+    if len(lens) < 2:
+        return 0.0
+    return round(1.0 / (1.0 + np.std(lens)), 4)
+
+# ── Novelty: words in abstractive NOT in extractive ───────────
+def novelty_score(abstractive, extractive):
+    """
+    What fraction of abstractive words are NEW
+    (not copied from extractive summary).
+    Higher = more abstractive / generative.
+    Lower = mostly copying extractive phrases.
+    """
+    ext_words = set(extractive.lower().split())
+    abs_words = abstractive.lower().split()
+    novel     = [w for w in abs_words if w not in ext_words]
+    return round(len(novel) / len(abs_words), 4) if abs_words else 0.0
+
+# ── Compression ratio ─────────────────────────────────────────
+original_words    = len(' '.join(
+    [s['text'] for s in article['sentences']]
+).split())
+extractive_words  = len(extractive_summary.split())
+abstractive_words = len(abstractive_summary.split())
+
+
+Full Comparison Report
+
+print("\n" + "=" * 65)
+print("COMPARATIVE EVALUATION REPORT")
+print("=" * 65)
+
+print(f"\n── ROUGE Scores ─────────────────────────────────────────")
+print(f"  {'Metric':<14} {'Extractive':>12} {'Abstractive':>12} {'Winner':>8}")
+print(f"  {'─'*50}")
+
+for metric in ['rouge1', 'rouge2', 'rougeL']:
+    ext_f1 = rouge_extractive[metric].fmeasure
+    abs_f1 = rouge_abstractive[metric].fmeasure
+    winner = 'Extract' if ext_f1 >= abs_f1 else 'Abstract'
+    diff   = abs(ext_f1 - abs_f1)
+    print(f"  {metric:<14} {ext_f1:>12.4f} {abs_f1:>12.4f} "
+          f"{winner:>8}  (Δ{diff:.4f})")
+
+print(f"\n── BERTScore ────────────────────────────────────────────")
+bs_ext = round(float(bert_f1_ext.mean()), 4)
+bs_abs = round(float(bert_f1_abs.mean()), 4)
+winner = 'Extract' if bs_ext >= bs_abs else 'Abstract'
+print(f"  {'BERTScore F1':<14} {bs_ext:>12.4f} {bs_abs:>12.4f} "
+      f"{winner:>8}  (Δ{abs(bs_ext-bs_abs):.4f})")
+
+print(f"\n── Quality Metrics ──────────────────────────────────────")
+fl_ext = fluency_score(extractive_summary)
+fl_abs = fluency_score(abstractive_summary)
+nv_abs = novelty_score(abstractive_summary, extractive_summary)
+
+print(f"  {'Metric':<20} {'Extractive':>12} {'Abstractive':>12}")
+print(f"  {'─'*46}")
+print(f"  {'Fluency proxy':<20} {fl_ext:>12.4f} {fl_abs:>12.4f}")
+print(f"  {'Novelty':<20} {'N/A':>12} {nv_abs:>12.4f}")
+print(f"  {'Word count':<20} {extractive_words:>12} {abstractive_words:>12}")
+print(f"  {'Compression':<20} "
+      f"{extractive_words/original_words:>11.3f}x "
+      f"{abstractive_words/original_words:>11.3f}x")
+
+print(f"\n── Summary ──────────────────────────────────────────────")
+print(f"  Extractive  → higher ROUGE    (exact word overlap)")
+print(f"  Abstractive → higher BERTScore (semantic similarity)")
+print(f"               higher Fluency   (uniform sentence structure)")
+print(f"               higher Novelty   (generates new phrases)")
+print(f"               lower WordCount  (more compressed)")
+
+
+Side-by-Side Display
+
+print("\n" + "=" * 65)
+print("EXTRACTIVE SUMMARY")
+print("=" * 65)
+print(extractive_summary)
+print(f"\nWords: {extractive_words}")
+
+print("\n" + "=" * 65)
+print("ABSTRACTIVE SUMMARY")
+print("=" * 65)
+print(abstractive_summary)
+print(f"\nWords: {abstractive_words}")
+
+print("\n" + "=" * 65)
+print("REFERENCE SUMMARY")
+print("=" * 65)
+print(article['reference'])
+print(f"\nWords: {len(article['reference'].split())}")
+
+
+Visualize Comparison
+
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+
+# ── ROUGE comparison ──────────────────────────────────────────
+metrics    = ['ROUGE-1', 'ROUGE-2', 'ROUGE-L']
+ext_scores = [rouge_extractive['rouge1'].fmeasure,
+              rouge_extractive['rouge2'].fmeasure,
+              rouge_extractive['rougeL'].fmeasure]
+abs_scores = [rouge_abstractive['rouge1'].fmeasure,
+              rouge_abstractive['rouge2'].fmeasure,
+              rouge_abstractive['rougeL'].fmeasure]
+
+x     = np.arange(len(metrics))
+width = 0.35
+axes[0].bar(x - width/2, ext_scores, width,
+            label='Extractive',  color='steelblue',
+            edgecolor='white')
+axes[0].bar(x + width/2, abs_scores, width,
+            label='Abstractive', color='darkorange',
+            edgecolor='white')
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(metrics)
+axes[0].set_ylim(0, 1)
+axes[0].set_title("ROUGE F1 Comparison", fontsize=12)
+axes[0].legend()
+axes[0].set_ylabel("Score")
+
+# ── BERTScore + Fluency ───────────────────────────────────────
+qual_metrics = ['BERTScore\nF1', 'Fluency\nProxy']
+ext_qual     = [bs_ext, fl_ext]
+abs_qual     = [bs_abs, fl_abs]
+
+x2 = np.arange(len(qual_metrics))
+axes[1].bar(x2 - width/2, ext_qual, width,
+            label='Extractive',  color='steelblue',
+            edgecolor='white')
+axes[1].bar(x2 + width/2, abs_qual, width,
+            label='Abstractive', color='darkorange',
+            edgecolor='white')
+axes[1].set_xticks(x2)
+axes[1].set_xticklabels(qual_metrics)
+axes[1].set_ylim(0, 1)
+axes[1].set_title("Semantic & Fluency", fontsize=12)
+axes[1].legend()
+
+# ── Word count comparison ─────────────────────────────────────
+labels    = ['Original\nDocument', 'Extractive\nSummary',
+             'Abstractive\nSummary', 'Reference\nSummary']
+wc_vals   = [original_words, extractive_words,
+             abstractive_words,
+             len(article['reference'].split())]
+bar_colors= ['gray', 'steelblue', 'darkorange', 'seagreen']
+bars      = axes[2].bar(labels, wc_vals,
+                        color=bar_colors, edgecolor='white')
+axes[2].set_title("Word Count Comparison", fontsize=12)
+axes[2].set_ylabel("Words")
+for bar, val in zip(bars, wc_vals):
+    axes[2].text(
+        bar.get_x() + bar.get_width()/2,
+        bar.get_height() + 5,
+        str(val), ha='center', fontsize=10,
+        fontweight='bold'
+    )
+
+plt.suptitle(
+    "Extractive vs Abstractive Summary Comparison",
+    fontsize=14
+)
+plt.tight_layout()
+plt.show()
+
+
+Save All Results
+
+final_results = {
+    "article_id"          : article['article_id'],
+    "n_sentences"         : article['n_sentences'],
+
+    # summaries
+    "extractive_summary"  : extractive_summary,
+    "abstractive_summary" : abstractive_summary,
+    "reference"           : article['reference'],
+
+    # ROUGE
+    "rouge1_ext"  : round(rouge_extractive['rouge1'].fmeasure,  4),
+    "rouge2_ext"  : round(rouge_extractive['rouge2'].fmeasure,  4),
+    "rougeL_ext"  : round(rouge_extractive['rougeL'].fmeasure,  4),
+    "rouge1_abs"  : round(rouge_abstractive['rouge1'].fmeasure, 4),
+    "rouge2_abs"  : round(rouge_abstractive['rouge2'].fmeasure, 4),
+    "rougeL_abs"  : round(rouge_abstractive['rougeL'].fmeasure, 4),
+
+    # BERTScore
+    "bertscore_ext"       : bs_ext,
+    "bertscore_abs"       : bs_abs,
+
+    # Quality
+    "fluency_ext"         : fl_ext,
+    "fluency_abs"         : fl_abs,
+    "novelty_abs"         : nv_abs,
+
+    # Word counts
+    "words_original"      : original_words,
+    "words_extractive"    : extractive_words,
+    "words_abstractive"   : abstractive_words,
+}
+
+with open("comparison_results.json", "w") as f:
+    json.dump(final_results, f, indent=2)
+
+print("✓ Results saved to comparison_results.json")
+print("\nKey findings:")
+print(f"  ROUGE-1  : Extractive {final_results['rouge1_ext']:.4f} "
+      f"vs Abstractive {final_results['rouge1_abs']:.4f}")
+print(f"  BERTScore: Extractive {final_results['bertscore_ext']:.4f} "
+      f"vs Abstractive {final_results['bertscore_abs']:.4f}")
+print(f"  Fluency  : Extractive {final_results['fluency_ext']:.4f} "
+      f"vs Abstractive {final_results['fluency_abs']:.4f}")
+print(f"  Novelty  : Abstractive introduces "
+      f"{final_results['novelty_abs']*100:.1f}% new words")
+
