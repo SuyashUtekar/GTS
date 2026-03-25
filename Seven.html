@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BERTopic Embedding Model Evaluation — Workflow</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0f1a;
+    --surface: #131724;
+    --card: #1a1f30;
+    --border: #252c42;
+    --accent: #4f8ef7;
+    --accent2: #a78bfa;
+    --accent3: #34d399;
+    --accent4: #fb923c;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --gold: #f59e0b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    padding: 48px 24px;
+  }
+
+.header {
+text-align: center;
+margin-bottom: 64px;
+}
+.header h1 {
+font-family: ‘DM Serif Display’, serif;
+font-size: clamp(2rem, 5vw, 3.2rem);
+background: linear-gradient(135deg, #4f8ef7 0%, #a78bfa 50%, #34d399 100%);
+-webkit-background-clip: text;
+-webkit-text-fill-color: transparent;
+background-clip: text;
+line-height: 1.2;
+margin-bottom: 12px;
+}
+.header p {
+color: var(–muted);
+font-size: 1rem;
+font-weight: 300;
+letter-spacing: 0.05em;
+}
+.badge {
+display: inline-block;
+background: rgba(79,142,247,0.12);
+border: 1px solid rgba(79,142,247,0.3);
+color: var(–accent);
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 0.7rem;
+padding: 3px 10px;
+border-radius: 20px;
+margin-bottom: 16px;
+letter-spacing: 0.1em;
+}
+
+.pipeline {
+max-width: 960px;
+margin: 0 auto;
+display: flex;
+flex-direction: column;
+gap: 0;
+}
+
+/* Phase block */
+.phase {
+display: grid;
+grid-template-columns: 180px 1fr;
+gap: 0 32px;
+position: relative;
+padding-bottom: 48px;
+}
+.phase:last-child { padding-bottom: 0; }
+
+/* Left column: phase label + connector line */
+.phase-meta {
+display: flex;
+flex-direction: column;
+align-items: flex-end;
+padding-top: 8px;
+position: relative;
+}
+.phase-label {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 0.65rem;
+letter-spacing: 0.12em;
+text-transform: uppercase;
+color: var(–muted);
+margin-bottom: 8px;
+text-align: right;
+}
+.phase-num {
+width: 36px;
+height: 36px;
+border-radius: 50%;
+display: flex;
+align-items: center;
+justify-content: center;
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 0.8rem;
+font-weight: 600;
+flex-shrink: 0;
+}
+.connector {
+flex: 1;
+width: 2px;
+background: linear-gradient(to bottom, var(–border), transparent);
+margin-top: 8px;
+margin-right: 17px;
+}
+
+/* Cards */
+.phase-content { display: flex; flex-direction: column; gap: 12px; }
+.card {
+background: var(–card);
+border: 1px solid var(–border);
+border-radius: 12px;
+padding: 20px 24px;
+transition: border-color 0.2s;
+}
+.card:hover { border-color: rgba(79,142,247,0.4); }
+.card-title {
+font-size: 1rem;
+font-weight: 600;
+margin-bottom: 10px;
+display: flex;
+align-items: center;
+gap: 10px;
+}
+.card-title .icon { font-size: 1.1rem; }
+.card p {
+font-size: 0.875rem;
+color: #94a3b8;
+line-height: 1.65;
+margin-bottom: 10px;
+}
+.card p:last-child { margin-bottom: 0; }
+
+/* Tags / chips */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.chip {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 0.68rem;
+padding: 3px 10px;
+border-radius: 6px;
+border: 1px solid;
+}
+.chip-blue  { background: rgba(79,142,247,0.1);  border-color: rgba(79,142,247,0.3);  color: #93c5fd; }
+.chip-purple{ background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.3); color: #c4b5fd; }
+.chip-green { background: rgba(52,211,153,0.1);  border-color: rgba(52,211,153,0.3);  color: #6ee7b7; }
+.chip-orange{ background: rgba(251,146,60,0.1);  border-color: rgba(251,146,60,0.3);  color: #fdba74; }
+.chip-gold  { background: rgba(245,158,11,0.1);  border-color: rgba(245,158,11,0.3);  color: #fcd34d; }
+
+/* Phase color themes */
+.p1 .phase-num { background: rgba(79,142,247,0.15);  color: var(–accent);  border: 1px solid rgba(79,142,247,0.4); }
+.p2 .phase-num { background: rgba(167,139,250,0.15); color: var(–accent2); border: 1px solid rgba(167,139,250,0.4); }
+.p3 .phase-num { background: rgba(52,211,153,0.15);  color: var(–accent3); border: 1px solid rgba(52,211,153,0.4); }
+.p4 .phase-num { background: rgba(251,146,60,0.15);  color: var(–accent4); border: 1px solid rgba(251,146,60,0.4); }
+.p5 .phase-num { background: rgba(245,158,11,0.15);  color: var(–gold);    border: 1px solid rgba(245,158,11,0.4); }
+
+/* Table-style comparison grid */
+.model-grid {
+display: grid;
+grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+gap: 10px;
+margin-top: 12px;
+}
+.model-card {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 8px;
+padding: 12px;
+}
+.model-card .name {
+font-family: ‘JetBrains Mono’, monospace;
+font-size: 0.72rem;
+font-weight: 600;
+color: var(–accent2);
+margin-bottom: 4px;
+}
+.model-card .desc {
+font-size: 0.75rem;
+color: var(–muted);
+line-height: 1.5;
+}
+
+/* Metrics row */
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-top: 12px; }
+.metric {
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 8px;
+padding: 12px 14px;
+}
+.metric .m-name { font-family: ‘JetBrains Mono’, monospace; font-size: 0.68rem; color: var(–muted); margin-bottom: 4px; }
+.metric .m-val  { font-size: 0.8rem; font-weight: 600; color: var(–text); }
+
+/* Output artifacts */
+.artifacts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.artifact {
+display: flex;
+align-items: center;
+gap: 12px;
+background: var(–surface);
+border: 1px solid var(–border);
+border-radius: 8px;
+padding: 10px 14px;
+}
+.artifact .icon { font-size: 1rem; }
+.artifact .a-text { font-size: 0.82rem; color: #94a3b8; }
+.artifact .a-text strong { color: var(–text); font-weight: 500; }
+
+/* Arrow separator */
+.arrow {
+text-align: center;
+font-size: 1.4rem;
+color: var(–border);
+padding: 4px 0;
+}
+
+/* Decision box */
+.decision {
+background: linear-gradient(135deg, rgba(79,142,247,0.08), rgba(167,139,250,0.08));
+border: 1px solid rgba(167,139,250,0.3);
+border-radius: 12px;
+padding: 20px 24px;
+margin-top: 4px;
+}
+.decision h3 {
+font-family: ‘DM Serif Display’, serif;
+font-size: 1.1rem;
+margin-bottom: 8px;
+color: #c4b5fd;
+}
+.decision p { font-size: 0.85rem; color: #94a3b8; line-height: 1.65; }
+
+/* Footer summary */
+.summary {
+max-width: 960px;
+margin: 56px auto 0;
+background: var(–card);
+border: 1px solid var(–border);
+border-radius: 16px;
+padding: 32px 36px;
+}
+.summary h2 {
+font-family: ‘DM Serif Display’, serif;
+font-size: 1.4rem;
+margin-bottom: 20px;
+color: var(–accent3);
+}
+.summary-grid {
+display: grid;
+grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+gap: 16px;
+}
+.s-item { display: flex; flex-direction: column; gap: 4px; }
+.s-item .s-label { font-family: ‘JetBrains Mono’, monospace; font-size: 0.65rem; color: var(–muted); letter-spacing: 0.1em; text-transform: uppercase; }
+.s-item .s-val { font-size: 0.9rem; color: var(–text); font-weight: 500; }
+</style>
+
+</head>
+<body>
+
+<div class="header">
+  <div class="badge">RESEARCH WORKFLOW</div>
+  <h1>BERTopic Embedding Model<br>Evaluation on Indian Legal Docs</h1>
+  <p>A systematic pipeline to identify the best embedding model for legal topic clustering</p>
+</div>
+
+<div class="pipeline">
+
+  <!-- PHASE 1 -->
+
+  <div class="phase p1">
+    <div class="phase-meta">
+      <div class="phase-label">Phase 01</div>
+      <div class="phase-num">1</div>
+      <div class="connector"></div>
+    </div>
+    <div class="phase-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">📂</span> Document Collection & Preparation</div>
+        <p>Gather 10–20 Indian legal documents spanning diverse case types. Ensure variety to stress-test topic separation across embedding models.</p>
+        <div class="chips">
+          <span class="chip chip-blue">Supreme Court judgments</span>
+          <span class="chip chip-blue">High Court orders</span>
+          <span class="chip chip-blue">IPC sections</span>
+          <span class="chip chip-blue">PIL documents</span>
+          <span class="chip chip-blue">Contract disputes</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">🧹</span> Preprocessing Pipeline</div>
+        <p>Clean and normalize each document before embedding. Use a shared preprocessing function so all models receive identical input.</p>
+        <div class="chips">
+          <span class="chip chip-green">Remove headers/footers</span>
+          <span class="chip chip-green">Strip citations noise</span>
+          <span class="chip chip-green">Sentence tokenization</span>
+          <span class="chip chip-green">Min length filter</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 2 -->
+
+  <div class="phase p2">
+    <div class="phase-meta">
+      <div class="phase-label">Phase 02</div>
+      <div class="phase-num">2</div>
+      <div class="connector"></div>
+    </div>
+    <div class="phase-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">🧠</span> Embedding Model Selection</div>
+        <p>Test 3–5 embedding models. Cover general-purpose, legal-domain, and multilingual options to find what works best on Indian legal language.</p>
+        <div class="model-grid">
+          <div class="model-card">
+            <div class="name">all-MiniLM-L6-v2</div>
+            <div class="desc">Fast, general-purpose. Good baseline.</div>
+          </div>
+          <div class="model-card">
+            <div class="name">legal-bert-base</div>
+            <div class="desc">Fine-tuned on legal corpora. Domain-aware.</div>
+          </div>
+          <div class="model-card">
+            <div class="name">paraphrase-mpnet-base-v2</div>
+            <div class="desc">Strong semantic similarity.</div>
+          </div>
+          <div class="model-card">
+            <div class="name">multilingual-e5-large</div>
+            <div class="desc">Handles Hindi/regional legal terms.</div>
+          </div>
+          <div class="model-card">
+            <div class="name">bge-large-en-v1.5</div>
+            <div class="desc">SOTA retrieval embeddings.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 3 -->
+
+  <div class="phase p3">
+    <div class="phase-meta">
+      <div class="phase-label">Phase 03</div>
+      <div class="phase-num">3</div>
+      <div class="connector"></div>
+    </div>
+    <div class="phase-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">⚙️</span> BERTopic Configuration (Shared)</div>
+        <p>Use identical BERTopic hyperparameters across all models so only the embedding changes between runs. This ensures a fair apples-to-apples comparison.</p>
+        <div class="chips">
+          <span class="chip chip-green">UMAP: n_neighbors=15, n_components=5</span>
+          <span class="chip chip-green">HDBSCAN: min_cluster_size=5</span>
+          <span class="chip chip-green">CountVectorizer: stop_words=english</span>
+          <span class="chip chip-green">top_n_words=10</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">📓</span> One Notebook Per Embedding Model</div>
+        <p>Each notebook follows an identical structure for reproducibility and easy side-by-side comparison.</p>
+        <div class="artifacts">
+          <div class="artifact"><span class="icon">📘</span><div class="a-text"><strong>01_minilm_bertopic.ipynb</strong> — all-MiniLM-L6-v2 run</div></div>
+          <div class="artifact"><span class="icon">📘</span><div class="a-text"><strong>02_legalbert_bertopic.ipynb</strong> — legal-bert-base run</div></div>
+          <div class="artifact"><span class="icon">📘</span><div class="a-text"><strong>03_mpnet_bertopic.ipynb</strong> — paraphrase-mpnet run</div></div>
+          <div class="artifact"><span class="icon">📘</span><div class="a-text"><strong>04_me5_bertopic.ipynb</strong> — multilingual-e5 run</div></div>
+          <div class="artifact"><span class="icon">📘</span><div class="a-text"><strong>05_bge_bertopic.ipynb</strong> — bge-large run</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">🗂️</span> Notebook Structure (Each)</div>
+        <div class="chips">
+          <span class="chip chip-purple">1. Imports & Config</span>
+          <span class="chip chip-purple">2. Load docs</span>
+          <span class="chip chip-purple">3. Init embedding model</span>
+          <span class="chip chip-purple">4. Run BERTopic</span>
+          <span class="chip chip-purple">5. Visualize topics</span>
+          <span class="chip chip-purple">6. Compute metrics</span>
+          <span class="chip chip-purple">7. Save results JSON</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 4 -->
+
+  <div class="phase p4">
+    <div class="phase-meta">
+      <div class="phase-label">Phase 04</div>
+      <div class="phase-num">4</div>
+      <div class="connector"></div>
+    </div>
+    <div class="phase-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">📊</span> Evaluation Metrics (Per Model)</div>
+        <p>Capture both quantitative scores and qualitative cluster inspection for each model run.</p>
+        <div class="metrics">
+          <div class="metric"><div class="m-name">COHERENCE SCORE</div><div class="m-val">Topic word quality</div></div>
+          <div class="metric"><div class="m-name">DIVERSITY SCORE</div><div class="m-val">Topic uniqueness</div></div>
+          <div class="metric"><div class="m-name">SILHOUETTE</div><div class="m-val">Cluster separation</div></div>
+          <div class="metric"><div class="m-name">NUM TOPICS</div><div class="m-val">vs. outlier ratio</div></div>
+          <div class="metric"><div class="m-name">TOPIC KEYWORDS</div><div class="m-val">Legal relevance (manual)</div></div>
+          <div class="metric"><div class="m-name">RUN TIME</div><div class="m-val">Compute efficiency</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title"><span class="icon">💾</span> Saved Outputs Per Model</div>
+        <p>Every notebook saves a structured result file so the final comparison notebook can load all without re-running.</p>
+        <div class="artifacts">
+          <div class="artifact"><span class="icon">📄</span><div class="a-text"><strong>results/{model_name}/topics.json</strong> — Topic → keyword list mapping</div></div>
+          <div class="artifact"><span class="icon">📄</span><div class="a-text"><strong>results/{model_name}/doc_topics.csv</strong> — Doc ID → assigned topic</div></div>
+          <div class="artifact"><span class="icon">📄</span><div class="a-text"><strong>results/{model_name}/metrics.json</strong> — All quantitative scores</div></div>
+          <div class="artifact"><span class="icon">🖼️</span><div class="a-text"><strong>results/{model_name}/topic_map.html</strong> — Interactive topic visualization</div></div>
+          <div class="artifact"><span class="icon">💾</span><div class="a-text"><strong>results/{model_name}/model.pkl</strong> — Serialized BERTopic model</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PHASE 5 -->
+
+  <div class="phase p5">
+    <div class="phase-meta">
+      <div class="phase-label">Phase 05</div>
+      <div class="phase-num">5</div>
+    </div>
+    <div class="phase-content">
+      <div class="card">
+        <div class="card-title"><span class="icon">🏆</span> Comparison & Final Selection</div>
+        <p>A dedicated <strong>comparison notebook</strong> loads all saved metrics, builds a unified leaderboard, and produces the final recommendation.</p>
+        <div class="artifacts">
+          <div class="artifact"><span class="icon">📓</span><div class="a-text"><strong>00_comparison_final.ipynb</strong> — Aggregates all results, ranks models</div></div>
+          <div class="artifact"><span class="icon">📊</span><div class="a-text"><strong>Radar chart</strong> — Coherence vs Diversity vs Silhouette per model</div></div>
+          <div class="artifact"><span class="icon">📊</span><div class="a-text"><strong>Bar chart</strong> — Number of topics & outlier % per model</div></div>
+          <div class="artifact"><span class="icon">📄</span><div class="a-text"><strong>final_report.md</strong> — Written recommendation with reasoning</div></div>
+        </div>
+      </div>
+      <div class="decision">
+        <h3>Decision Criteria</h3>
+        <p>Rank models using a weighted score: <strong>Topic Coherence (40%)</strong> + <strong>Silhouette Score (30%)</strong> + <strong>Topic Diversity (20%)</strong> + <strong>Manual Legal Relevance (10%)</strong>. The model with the highest weighted score AND interpretable legal topics wins. If two models tie on metrics, prefer the one with fewer outlier documents.</p>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Summary -->
+
+<div class="summary">
+  <h2>Project at a Glance</h2>
+  <div class="summary-grid">
+    <div class="s-item"><div class="s-label">Documents</div><div class="s-val">10–20 Indian legal docs</div></div>
+    <div class="s-item"><div class="s-label">Embedding Models</div><div class="s-val">3–5 per experiment</div></div>
+    <div class="s-item"><div class="s-label">Notebooks Created</div><div class="s-val">1 per model + 1 comparison</div></div>
+    <div class="s-item"><div class="s-label">Outputs Saved</div><div class="s-val">JSON + CSV + HTML + PKL per model</div></div>
+    <div class="s-item"><div class="s-label">Key Metric</div><div class="s-val">Weighted score (coherence, silhouette, diversity)</div></div>
+    <div class="s-item"><div class="s-label">Final Deliverable</div><div class="s-val">Best model recommendation + report</div></div>
+  </div>
+</div>
+
+</body>
+</html>
