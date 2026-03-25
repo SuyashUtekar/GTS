@@ -1,0 +1,442 @@
+# ============================================================
+# CELL 2 — Config (only change this block per model)
+# ============================================================
+
+PDF_PATH        = "your_document.pdf"          # path to your PDF
+MODEL_NAME      = "law-ai/InLegalBERT"         # swap this per notebook
+OUTPUT_EXCEL    = "results_inlegalbert.xlsx"   # output file name
+EXPERIMENT_NAME = "InLegalBERT"                # label for sheets/logs
+
+# BERTopic settings (keep same across all notebooks)
+UMAP_NEIGHBORS   = 15
+UMAP_COMPONENTS  = 5
+HDBSCAN_MIN_SIZE = 5
+TOP_N_WORDS      = 10
+MIN_TOPIC_SIZE   = 3
+
+
+# ============================================================
+# CELL 3 — Imports
+# ============================================================
+
+import pdfplumber
+import re
+import pandas as pd
+from sentence_transformers import SentenceTransformer
+from bertopic import BERTopic
+from umap import UMAP
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
+import warnings
+warnings.filterwarnings("ignore")
+
+print("✅ All imports successful")
+
+
+# ============================================================
+# CELL 4 — Load & Extract PDF
+# ============================================================
+
+def extract_text_from_pdf(pdf_path):
+    full_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text()
+            if text:
+                full_text += f"\n{text}"
+    print(f"✅ Extracted text from {len(pdf.pages)} pages")
+    print(f"   Total characters: {len(full_text):,}")
+    return full_text
+
+raw_text = extract_text_from_pdf(PDF_PATH)
+
+# Preview
+print("\n--- First 500 chars ---")
+print(raw_text[:500])
+
+
+# ============================================================
+# CELL 5 — Preprocess: Clean & Chunk into Paragraphs
+# ============================================================
+
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)                    # collapse whitespace
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)          # remove non-ASCII (some PDF artifacts)
+    text = re.sub(r'\b\d+\b', '', text)                  # remove lone numbers (page nos, etc.)
+    text = text.strip()
+    return text
+
+def chunk_into_paragraphs(text, min_length=80):
+    """Split on double newlines or long single newlines to get paragraph chunks."""
+    chunks = re.split(r'\n{2,}', text)
+    chunks = [clean_text(c) for c in chunks]
+    chunks = [c for c in chunks if len(c) >= min_length]  # drop very short fragments
+    return chunks
+
+docs = chunk_into_paragraphs(raw_text)
+
+print(f"✅ Total chunks after preprocessing: {len(docs)}")
+print(f"\n--- Sample Chunks ---")
+for i, d in enumerate(docs[:3]):
+    print(f"\n[Chunk {i+1}] {d[:200]}...")
+
+
+# ============================================================
+# CELL 6 — Load Embedding Model & Generate Embeddings
+# ============================================================
+
+print(f"⏳ Loading embedding model: {MODEL_NAME}")
+embedding_model = SentenceTransformer(MODEL_NAME)
+
+print("⏳ Generating embeddings (this may take a minute)...")
+embeddings = embedding_model.encode(docs, show_progress_bar=True, batch_size=16)
+
+print(f"\n✅ Embeddings shape: {embeddings.shape}")
+# Expected: (num_chunks, embedding_dim)
+
+
+# ============================================================
+# CELL 7 — Configure & Run BERTopic
+# ============================================================
+
+umap_model = UMAP(
+    n_neighbors=UMAP_NEIGHBORS,
+    n_components=UMAP_COMPONENTS,
+    min_dist=0.0,
+    metric='cosine',
+    random_state=42
+)
+
+hdbscan_model = HDBSCAN(
+    min_cluster_size=HDBSCAN_MIN_SIZE,
+    min_samples=1,
+    metric='euclidean',
+    cluster_selection_method='eom',
+    prediction_data=True
+)
+
+vectorizer_model = CountVectorizer(
+    stop_words="english",
+    ngram_range=(1, 2),     # unigrams + bigrams — better for legal terms
+    min_df=2
+)
+
+topic_model = BERTopic(
+    umap_model=umap_model,
+    hdbscan_model=hdbscan_model,
+    vectorizer_model=vectorizer_model,
+    top_n_words=TOP_N_WORDS,
+    min_topic_size=MIN_TOPIC_SIZE,
+    calculate_probabilities=True,
+    verbose=True
+)
+
+print("⏳ Fitting BERTopic...")
+t_start = time.time()
+topics, probabilities = topic_model.fit_transform(docs, embeddings)
+run_time_seconds = round(time.time() - t_start, 2)
+
+print(f"\n✅ BERTopic done!")
+print(f"   Topics found     : {len(set(topics)) - 1}")   # -1 to exclude outlier topic -1
+print(f"   Outlier chunks   : {topics.count(-1)}")
+print(f"   Total chunks     : {len(docs)}")
+
+
+# ============================================================
+# CELL 8 — Inspect Clusters (Read what each topic contains)
+# ============================================================
+
+topic_info = topic_model.get_topic_info()
+print("=== TOPIC SUMMARY ===\n")
+print(topic_info[topic_info['Topic'] != -1][['Topic', 'Count', 'Name']].to_string(index=False))
+
+print("\n\n=== TOPIC KEYWORDS ===\n")
+for topic_id in sorted(set(topics)):
+    if topic_id == -1:
+        continue
+    keywords = [word for word, _ in topic_model.get_topic(topic_id)]
+    print(f"Topic {topic_id:>3}: {' | '.join(keywords)}")
+
+print("\n\n=== SAMPLE TEXTS PER TOPIC ===\n")
+df_temp = pd.DataFrame({"text": docs, "topic": topics})
+
+for topic_id in sorted(set(topics)):
+    if topic_id == -1:
+        continue
+    samples = df_temp[df_temp['topic'] == topic_id]['text'].values[:2]  # 2 samples per topic
+    keywords = [w for w, _ in topic_model.get_topic(topic_id)]
+    print(f"── Topic {topic_id} | Keywords: {', '.join(keywords[:5])} ──")
+    for j, s in enumerate(samples):
+        print(f"   Sample {j+1}: {s[:300]}...")
+    print()
+
+
+# ============================================================
+# CELL 9 — Visualizations (inline)
+# ============================================================
+
+# 1. Topic word scores bar chart
+fig_bar = topic_model.visualize_barchart(top_n_topics=10, n_words=8)
+fig_bar.show()
+
+# 2. Intertopic distance map
+fig_map = topic_model.visualize_topics()
+fig_map.show()
+
+# 3. Document-topic heatmap (if not too many docs)
+if len(docs) <= 200:
+    fig_heat = topic_model.visualize_heatmap()
+    fig_heat.show()
+
+
+# ============================================================
+# CELL 10 — Build Results DataFrame (same as before)
+# ============================================================
+
+def get_keywords_string(topic_model, topic_id):
+    if topic_id == -1:
+        return "OUTLIER"
+    return " | ".join([w for w, _ in topic_model.get_topic(topic_id)])
+
+results_df = pd.DataFrame({
+    "chunk_id"       : range(len(docs)),
+    "chunk_text"     : docs,
+    "topic_id"       : topics,
+    "topic_keywords" : [get_keywords_string(topic_model, t) for t in topics],
+    "confidence"     : [round(float(max(prob)), 4) if sum(prob) > 0 else 0.0
+                        for prob in probabilities]
+})
+
+summary_df = topic_info[topic_info['Topic'] != -1][['Topic', 'Count', 'Name']].copy()
+summary_df['Keywords'] = summary_df['Topic'].apply(
+    lambda t: " | ".join([w for w, _ in topic_model.get_topic(t)])
+)
+summary_df.columns = ['topic_id', 'num_chunks', 'topic_name', 'keywords']
+
+print(f"✅ Results DataFrame: {results_df.shape}")
+
+
+# ============================================================
+# CELL 10.5 — Evaluation Metrics (all 6)
+# ============================================================
+import time
+import numpy as np
+from sklearn.metrics import silhouette_score
+from gensim.models.coherencemodel import CoherenceModel
+from gensim.corpora.dictionary import Dictionary
+from gensim.utils import simple_preprocess
+
+# ── helpers ──────────────────────────────────────────────────
+
+def get_non_outlier_mask(topics):
+    """Boolean mask — True for chunks that got a real topic (not -1)."""
+    return np.array(topics) != -1
+
+# ── 1. COHERENCE SCORE (C_V) ─────────────────────────────────
+# Measures whether the top words in each topic actually co-occur
+# in the documents. Higher = more coherent topics. Range: 0–1.
+
+print("⏳ Computing Coherence Score (C_V)...")
+
+tokenized_docs = [simple_preprocess(doc) for doc in docs]
+dictionary     = Dictionary(tokenized_docs)
+corpus         = [dictionary.doc2bow(doc) for doc in tokenized_docs]
+
+# Build topic word lists from BERTopic
+bertopic_topics = []
+for topic_id in sorted(set(topics)):
+    if topic_id == -1:
+        continue
+    words = [w for w, _ in topic_model.get_topic(topic_id)]
+    # Keep only words present in gensim dictionary
+    words = [w for w in words if w in dictionary.token2id]
+    if words:
+        bertopic_topics.append(words)
+
+if len(bertopic_topics) > 0:
+    coherence_model = CoherenceModel(
+        topics=bertopic_topics,
+        texts=tokenized_docs,
+        dictionary=dictionary,
+        coherence='c_v'
+    )
+    coherence_score = round(coherence_model.get_coherence(), 4)
+else:
+    coherence_score = None
+    print("   ⚠️  Not enough topics for coherence — try lowering MIN_TOPIC_SIZE")
+
+print(f"   ✅ Coherence Score (C_V): {coherence_score}")
+
+
+# ── 2. TOPIC DIVERSITY ────────────────────────────────────────
+# % of unique words across all topic top-word lists.
+# 1.0 = every topic has completely different words (max diversity).
+# Low score = topics are repetitive / redundant.
+
+print("\n⏳ Computing Topic Diversity...")
+
+all_top_words = []
+for topic_id in sorted(set(topics)):
+    if topic_id == -1:
+        continue
+    words = [w for w, _ in topic_model.get_topic(topic_id)]
+    all_top_words.extend(words)
+
+if all_top_words:
+    diversity_score = round(len(set(all_top_words)) / len(all_top_words), 4)
+else:
+    diversity_score = None
+
+print(f"   ✅ Topic Diversity       : {diversity_score}")
+
+
+# ── 3. SILHOUETTE SCORE ───────────────────────────────────────
+# How well-separated the clusters are in embedding space.
+# Range: -1 to 1. Higher = tighter, more distinct clusters.
+# Computed only on non-outlier chunks.
+
+print("\n⏳ Computing Silhouette Score...")
+
+mask = get_non_outlier_mask(topics)
+filtered_embeddings = embeddings[mask]
+filtered_topics     = np.array(topics)[mask]
+
+if len(set(filtered_topics)) >= 2:
+    silhouette = round(silhouette_score(
+        filtered_embeddings,
+        filtered_topics,
+        metric='cosine',
+        sample_size=min(1000, len(filtered_embeddings)),  # cap for speed
+        random_state=42
+    ), 4)
+else:
+    silhouette = None
+    print("   ⚠️  Need ≥2 topics for silhouette score")
+
+print(f"   ✅ Silhouette Score      : {silhouette}")
+
+
+# ── 4. NUMBER OF TOPICS & OUTLIER RATIO ──────────────────────
+# Num topics: more isn't always better — check if they're meaningful.
+# Outlier ratio: fraction of chunks BERTopic couldn't assign.
+# High outlier % (>30%) usually means poor embedding fit.
+
+num_topics     = len(set(topics)) - 1   # exclude -1
+num_outliers   = topics.count(-1)
+outlier_ratio  = round(num_outliers / len(topics), 4)
+
+print(f"\n   ✅ Number of Topics      : {num_topics}")
+print(f"   ✅ Outlier Count         : {num_outliers} / {len(topics)}")
+print(f"   ✅ Outlier Ratio         : {outlier_ratio}  {'⚠️ High' if outlier_ratio > 0.3 else '✅ OK'}")
+
+
+# ── 5. TOPIC KEYWORD LEGAL RELEVANCE (manual scoring) ────────
+# No automated metric can judge "is this legally meaningful?"
+# Print a clean list for you to manually score 1–5 per topic.
+
+print("\n── MANUAL REVIEW — Score each topic 1–5 for legal relevance ──")
+print(f"{'Topic':>6}  {'Top 5 Keywords'}")
+print("-" * 60)
+for topic_id in sorted(set(topics)):
+    if topic_id == -1:
+        continue
+    kws = [w for w, _ in topic_model.get_topic(topic_id)][:5]
+    print(f"  {topic_id:>3}    {' | '.join(kws)}")
+
+# You fill this dict manually after reviewing above output:
+manual_relevance_scores = {
+    # topic_id : score (1=irrelevant, 5=highly legal & meaningful)
+    # Example:
+    # 0: 5,
+    # 1: 4,
+    # 2: 2,
+}
+avg_manual_score = (
+    round(sum(manual_relevance_scores.values()) / len(manual_relevance_scores), 2)
+    if manual_relevance_scores else "Not scored yet"
+)
+print(f"\n   ✅ Avg Manual Relevance  : {avg_manual_score}")
+
+
+# ── 6. RUN TIME ───────────────────────────────────────────────
+# Already captured at fit_transform step — add this line
+# RIGHT BEFORE topic_model.fit_transform(...) in Cell 7:
+#   t_start = time.time()
+# And this line RIGHT AFTER:
+#   run_time_seconds = round(time.time() - t_start, 2)
+#
+# If you didn't add it, approximate it here:
+run_time_seconds = "Add t_start/t_end around fit_transform in Cell 7"
+
+
+# ── METRICS SUMMARY DICT ──────────────────────────────────────
+metrics = {
+    "experiment_name"       : EXPERIMENT_NAME,
+    "embedding_model"       : MODEL_NAME,
+    "pdf_file"              : PDF_PATH,
+    "num_chunks"            : len(docs),
+    "num_topics"            : num_topics,
+    "num_outliers"          : num_outliers,
+    "outlier_ratio"         : outlier_ratio,
+    "coherence_score_cv"    : coherence_score,
+    "topic_diversity"       : diversity_score,
+    "silhouette_score"      : silhouette,
+    "avg_manual_relevance"  : avg_manual_score,
+    "run_time_seconds"      : run_time_seconds,
+}
+
+print("\n\n══════════════════════════════════════════")
+print(f"  METRICS SUMMARY — {EXPERIMENT_NAME}")
+print("══════════════════════════════════════════")
+for k, v in metrics.items():
+    print(f"  {k:<30}: {v}")
+print("══════════════════════════════════════════")
+
+
+# ============================================================
+# CELL 11 — Save to Excel (now with a Metrics sheet)
+# ============================================================
+
+with pd.ExcelWriter(OUTPUT_EXCEL, engine='openpyxl') as writer:
+
+    # Sheet 1: All chunks with assigned topic + confidence
+    results_df.to_excel(writer, sheet_name='Chunk_Topics', index=False)
+
+    # Sheet 2: Topic keyword summary
+    summary_df.to_excel(writer, sheet_name='Topic_Summary', index=False)
+
+    # Sheet 3: All 6 metrics
+    metrics_df = pd.DataFrame([
+        {"metric": k, "value": v, "notes": ""}
+        for k, v in metrics.items()
+    ])
+    # Add interpretation notes
+    notes = {
+        "coherence_score_cv"  : "0–1. Higher = more coherent topics. Good: >0.5",
+        "topic_diversity"     : "0–1. Higher = less redundant topics. Good: >0.7",
+        "silhouette_score"    : "-1 to 1. Higher = tighter clusters. Good: >0.3",
+        "outlier_ratio"       : "Lower is better. Concern if >0.3",
+        "avg_manual_relevance": "1–5 scale. Fill manually after reviewing topics",
+        "run_time_seconds"    : "Lower = more efficient model",
+    }
+    metrics_df['notes'] = metrics_df['metric'].map(notes).fillna("")
+    metrics_df.to_excel(writer, sheet_name='Metrics', index=False)
+
+    # Sheet 4: Run config / metadata
+    meta_df = pd.DataFrame({
+        "field": ["PDF", "Embedding Model", "Num Chunks", "Num Topics",
+                  "Outliers", "UMAP Neighbors", "UMAP Components", "HDBSCAN Min Size"],
+        "value": [PDF_PATH, MODEL_NAME, len(docs), num_topics,
+                  num_outliers, UMAP_NEIGHBORS, UMAP_COMPONENTS, HDBSCAN_MIN_SIZE]
+    })
+    meta_df.to_excel(writer, sheet_name='Run_Metadata', index=False)
+
+print(f"✅ Saved: {OUTPUT_EXCEL}")
+print(f"   Sheet 1 — Chunk_Topics  : {len(results_df)} rows")
+print(f"   Sheet 2 — Topic_Summary : {len(summary_df)} topics")
+print(f"   Sheet 3 — Metrics       : 6 evaluation scores")
+print(f"   Sheet 4 — Run_Metadata  : config log")
+
+
+What Each Metric Tells You
+
