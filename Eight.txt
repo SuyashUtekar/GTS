@@ -1,0 +1,186 @@
+Group 1 — Priority Sector Lending (Anchor Documents)
+Doc 1 — Master Directions PSL Targets & Classification 2025 (Latest)
+RBI/FIDD/2024-25/128 — Master Directions on Priority Sector Lending (PSL) – Targets and Classification, dated March 24, 2025, updated as on January 19, 2026
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12799
+
+
+Doc 2 — Master Directions PSL 2020 (Consolidated, frequently updated)
+RBI/FIDD/2020-21/72 — Master Directions FIDD.CO.Plan.BC.5/04.09.01/2020-21, dated September 04, 2020, updated as on March 25, 2025 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=11959
+
+
+Doc 3 — Master Direction PSL 2016 (Historical baseline)
+RBI/FIDD/2016-17/33 — Master Direction FIDD.CO.Plan.1/04.09.01/2016-17, dated July 7, 2016, updated as on December 05, 2019 
+
+https://www.rbi.org.in/commonman/English/scripts/notification.aspx?id=2342
+
+
+Group 2 — MSME Lending (Direct Hop from PSL)
+Doc 4 — Master Direction MSME Lending 2017 (Updated 2026)
+RBI/FIDD/2017-2018/56 — Master Direction FIDD.MSME & NFS.12/06.02.31/2017-18, dated July 24, 2017, updated as on February 09, 2026 
+
+https://rbi.org.in/commonman/English/scripts/notification.aspx?id=2327
+
+
+Doc 5 — Master Direction MSME Lending 2016
+RBI/FIDD/2016-17/37 — Master Direction FIDD.MSME & NFS.3/06.02.31/2016-17 
+
+https://rbi.org.in/scripts/BS_ViewMasDirections.aspx?id=10523
+
+
+Group 3 — Interest Rates on Advances (Hop from MSME Lending)
+Doc 6 — Master Direction Interest Rate on Advances 2016 (Updated 2025)
+RBI/DBR/2015-16/20 — Master Direction DBR.Dir.No.85/13.03.00/2015-16, dated March 03, 2016, updated as on October 1, 2025 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10295
+
+
+Doc 7 — Master Direction Interest Rate on Deposits 2016 (Updated 2024)
+RBI/DBR/2015-16/19 — Master Direction DBR.Dir.No.84/13.03.00/2015-16, dated March 03, 2016, updated as on June 07, 2024 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10296
+
+
+Group 4 — NBFC Regulations (Hop from MSME + PSL)
+Doc 8 — Master Direction NBFC Scale Based Regulation 2023 (Latest)
+RBI/DoR/2023-24/106 — DoR.FIN.REC.No.45/03.10.119/2023-24, dated October 19, 2023, updated as on July 17, 2025 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12550
+
+
+Doc 9 — Master Direction NBFC Systemically Important 2016
+RBI/DNBR/2016-17/44 — Master Direction DNBR.PD.007/03.10.119/2016-17, dated September 01, 2016, updated as on August 29, 2023 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10585
+
+
+Doc 10 — Master Direction NBFC Non-Deposit Taking 2016
+RBI/DNBR/2016-17/38 — Master Direction DNBR.PD.002/03.10.119/2016-17, dated August 25, 2016, updated as on February 27, 2025 
+
+https://rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10563
+
+
+Group 5 — Digital Payment Security (Hop from NBFC + Customer Compliance)
+Doc 11 — Master Directions Digital Payment Security Controls 2021
+RBI/2020-21/74 — DoS.CO.CSITE.SEC.No.1852/31.01.015/2020-21 — Master Directions on Digital Payment Security Controls for Scheduled Commercial Banks, Small Finance Banks, Payments Banks and Credit Card issuing NBFCs 
+
+https://rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12032
+
+
+Doc 12 — Master Direction Authentication Digital Payment Transactions 2025
+RBI/2025-26/79 — CO.DPSS.POLC.No. S 668/02-14-015/2025-2026 — Reserve Bank of India (Authentication mechanisms for digital payment transactions) Directions, 2025 
+
+https://www.rbi.org.in/scripts/BS_ViewMasDirections.aspx?id=12898
+
+
+Doc 13 — Master Direction Credit Card & Debit Card Issuance 2022
+Master Direction on Credit Card and Debit Card — Issuance and Conduct Directions, 2022 
+
+https://rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12300
+
+
+Doc 14 — Master Direction Prepaid Payment Instruments 2021 (Updated 2024)
+RBI/DPSS/2021-22/82 — CO.DPSS.POLC.No.S-479/02.14.006/2021-22, dated August 27, 2021, updated as on December 27, 2024 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12156
+
+
+Group 6 — Fraud Risk Management (Hop from Digital Payments + NBFC)
+Doc 15 — Master Directions Fraud Risk Management 2024 (Latest)
+RBI/DOS/2024-25/118 — Master Directions on Fraud Risk Management for all Commercial Banks including Regional Rural Banks 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=12702
+
+
+Doc 16 — Master Direction Fraud Classification 2016
+RBI/DBS/2016-17/28 — DBS.CO.CFMC.BC.No.1/23.04.001/2016-17, dated July 01, 2016, updated as on July 03, 2017 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10477
+
+
+Group 7 — Foreign Exchange & Reporting (Hop from NBFC + Compliance)
+Doc 17 — Master Direction FEMA Reporting 2016 (Updated 2026)
+RBI/FED/2015-16/13 — FED Master Direction No.18/2015-16, dated January 1, 2016, updated as on January 12, 2026 
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=10202
+
+
+Group 8 — KYC & Liquidity Risk (Hop 4-5 Links)
+Doc 18 — Master Direction KYC 2016 (Updated 2024)
+
+https://www.rbi.org.in/Scripts/BS_ViewMasDirections.aspx?id=11566
+
+
+Doc 19 — Liquidity Coverage Ratio Circular 2019
+RBI/2019-20/217 — DOR.BP.BC.No.65/21.04.098/2019-20 — Liquidity Coverage Ratio for All Commercial Banks excluding Regional Rural Banks, Local Area Banks and Payments Banks 
+
+https://www.rbi.org.in/commonperson/English/Scripts/Notification.aspx?Id=3237
+
+
+Doc 20 — Master Direction Interest Rate UCBs 2016 (Updated 2024)
+RBI/DCBR/2015-16/23 — Master Direction DCBR.Dir.No.1/13.01.000/2015-16, dated May 12, 2016, updated as on January 01, 2024 
+
+https://rbi.org.in/scripts/BS_ViewMasDirections.aspx?id=10394
+
+
+Summary Table
+
+Doc   Title                                  Group          Hops Enabled
+───────────────────────────────────────────────────────────────────────
+01    PSL Targets 2025 (Latest)             PSL Anchor     primary
+02    PSL Master Direction 2020             PSL Anchor     version compare
+03    PSL Master Direction 2016             PSL Historical version compare
+04    MSME Lending 2017 (updated 2026)      MSME           hop 1 from PSL
+05    MSME Lending 2016                     MSME           hop 1 historical
+06    Interest Rate Advances 2016           Rates          hop 2 from MSME
+07    Interest Rate Deposits 2016           Rates          hop 2 from MSME
+08    NBFC Scale Based Regulation 2023      NBFC           hop 2 from PSL
+09    NBFC Systemically Important 2016      NBFC           hop 3 from MSME
+10    NBFC Non-Deposit Taking 2016          NBFC           hop 3
+11    Digital Payment Security 2021         Digital        hop 3 from NBFC
+12    Authentication Digital Payments 2025  Digital        hop 4
+13    Credit Card Debit Card 2022           Digital        hop 3-4
+14    Prepaid Payment Instruments 2021      Digital        hop 4
+15    Fraud Risk Management 2024            Fraud          hop 4-5
+16    Fraud Classification 2016             Fraud          hop 4-5 historical
+17    FEMA Reporting 2016                   FX/Reporting   hop 4-5
+18    KYC Master Direction 2016             KYC            hop 3-4
+19    Liquidity Coverage Ratio 2019         Liquidity      hop 4
+20    Interest Rate UCBs 2016              UCB Rates       hop 3-4
+
+
+Sample Multi-Hop Chains This New Corpus Enables
+
+4-hop:
+  "What PSL sub-target applies to MSME lending
+   and what interest rate ceiling applies to
+   such loans for micro enterprises?"
+  Doc 01 → PSL targets for MSME sub-target %
+  Doc 04 → MSME definition and classification
+  Doc 06 → Interest rate ceiling on advances
+  Doc 07 → Deposit rate linkage to lending rate
+
+5-hop:
+  "If an NBFC-MFI lends to a micro enterprise
+   that then defaults and a digital fraud is
+   suspected, what reporting obligations apply?"
+  Doc 08 → NBFC-MFI regulatory framework
+  Doc 04 → MSME classification of borrower
+  Doc 11 → Digital payment fraud detection
+  Doc 15 → Fraud reporting obligations
+  Doc 17 → FEMA reporting if cross-border
+
+5-hop:
+  "Has the PSL target for weaker sections
+   changed between 2016 and 2025 and does
+   KYC apply differently to UCB MSME loans?"
+  Doc 03 → 2016 PSL weaker section target
+  Doc 02 → 2020 updated target
+  Doc 01 → 2025 current target
+  Doc 18 → KYC requirements
+  Doc 20 → UCB specific interest rate rules
+
+
+All 20 links are directly from rbi.org.in and freely downloadable without login.​​​​​​​​​​​​​​​​
