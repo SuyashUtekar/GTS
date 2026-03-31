@@ -1,0 +1,274 @@
+# ============================================================
+# CELL 10 — INSTALL & SETUP
+# ============================================================
+# !pip install openai jsonlines
+
+import openai
+import time
+import jsonlines
+from pathlib import Path
+
+# Set your OpenAI API key
+openai.api_key = "sk-..."   # ← replace with your key
+# OR: use environment variable (recommended)
+# import os; openai.api_key = os.getenv("OPENAI_API_KEY")
+
+MODEL    = "gpt-4o"       # gpt-4o is faster & cheaper than gpt-4; same quality
+MAX_RETRIES = 3
+SLEEP_SEC   = 2           # pause between API calls to avoid rate limits
+
+print("✅ OpenAI client ready")
+
+
+# ============================================================
+# CELL 11 — CORE LLM CONVERTER
+# One semantic sentence per row, via GPT-4
+# ============================================================
+
+def build_prompt(table: list[list[str]], page_num: int, table_idx: int) -> str:
+    """
+    Builds the prompt sent to GPT-4 for one table.
+    """
+    headers  = table[0]
+    data_rows = table[1:]
+
+    # Format table as readable markdown for the LLM
+    col_widths = [max(len(str(row[i])) if i < len(row) else 0 
+                      for row in table) for i in range(len(headers))]
+    
+    def fmt_row(row):
+        return " | ".join(
+            str(cell).ljust(col_widths[i]) if i < len(col_widths) else str(cell)
+            for i, cell in enumerate(row)
+        )
+
+    table_md = fmt_row(headers) + "\n"
+    table_md += "-" * 60 + "\n"
+    for row in data_rows:
+        table_md += fmt_row(row) + "\n"
+
+    prompt = f"""You are converting a table extracted from a document (Page {page_num}, Table {table_idx}) into semantic text for NLP and RAG purposes.
+
+TABLE:
+{table_md}
+
+INSTRUCTIONS:
+- Write EXACTLY one fluent, self-contained English sentence for each data row.
+- Each sentence must include the most important column values in natural language.
+- Do NOT use bullet points, numbering, or markdown — plain sentences only.
+- Each sentence must make sense standalone, without needing to see the table.
+- Preserve all numbers, units, dates, and proper nouns exactly as they appear.
+- If a cell is empty, skip that field in the sentence.
+- Output one sentence per line, with no extra commentary or headers.
+
+OUTPUT (one sentence per row, one per line):"""
+
+    return prompt
+
+
+def llm_table_to_sentences(table       : list[list[str]],
+                            page_num    : int,
+                            table_idx   : int,
+                            model       : str = MODEL) -> list[dict]:
+    """
+    Sends one table to GPT-4 and parses the response into per-row sentence chunks.
+    Returns list of dicts compatible with your existing chunk schema.
+    """
+    if not table or len(table) < 2:
+        return []
+
+    headers   = [h.strip() if h else f"Col_{i}" for i, h in enumerate(table[0])]
+    data_rows = [r for r in table[1:] if any(c and c.strip() for c in r)]
+
+    if not data_rows:
+        return []
+
+    prompt = build_prompt(table, page_num, table_idx)
+
+    # --- Call GPT-4 with retry logic ---
+    response_text = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = openai.chat.completions.create(
+                model    = model,
+                messages = [
+                    {
+                        "role"   : "system",
+                        "content": "You are a precise data-to-text converter for NLP pipelines. Follow instructions exactly."
+                    },
+                    {
+                        "role"   : "user",
+                        "content": prompt
+                    }
+                ],
+                temperature = 0.1,   # low temp → consistent, factual output
+                max_tokens  = 1024,
+            )
+            response_text = response.choices[0].message.content.strip()
+            break
+
+        except openai.RateLimitError:
+            print(f"    ⚠️  Rate limit hit — waiting {SLEEP_SEC * attempt}s (attempt {attempt}/{MAX_RETRIES})")
+            time.sleep(SLEEP_SEC * attempt)
+        except openai.APIError as e:
+            print(f"    ❌ API error: {e}")
+            break
+
+    if not response_text:
+        return []
+
+    # --- Parse: one sentence per line → match back to rows ---
+    sentences = [s.strip() for s in response_text.splitlines() if s.strip()]
+
+    chunks = []
+    for row_idx, (row, sentence) in enumerate(zip(data_rows, sentences)):
+        chunks.append({
+            "text"       : f"[Page {page_num}][Table {table_idx}][Row {row_idx+1}] {sentence}",
+            "sentence"   : sentence,          # clean sentence without prefix
+            "raw_row"    : dict(zip(headers, row)),
+            "page"       : page_num,
+            "table_idx"  : table_idx,
+            "row_idx"    : row_idx + 1,
+            "source_type": "table_llm",
+        })
+
+    return chunks
+
+
+# ============================================================
+# CELL 12 — RUN ON ALL TABLES
+# ============================================================
+
+def convert_all_tables_llm(table_data: dict) -> list[dict]:
+    """
+    Iterates over all extracted tables and converts each via GPT-4.
+    table_data: output of your extract_tables() from Cell 4.
+    """
+    all_chunks  = []
+    total_tables = sum(len(tbls) for tbls in table_data.values())
+    processed    = 0
+
+    for page_num, tables in table_data.items():
+        for tbl_idx, table in enumerate(tables, start=1):
+            processed += 1
+            print(f"  [{processed}/{total_tables}] Page {page_num} | Table {tbl_idx} "
+                  f"({len(table)-1} rows) ...", end=" ")
+
+            chunks = llm_table_to_sentences(table, page_num, tbl_idx)
+            all_chunks.extend(chunks)
+
+            print(f"→ {len(chunks)} sentences ✅")
+            time.sleep(SLEEP_SEC)   # be polite to the API
+
+    return all_chunks
+
+
+print("🤖 Converting tables → LLM semantic sentences (GPT-4)...\n")
+llm_chunks = convert_all_tables_llm(results["tables"])
+
+# Save full chunks
+with open(OUTPUT_DIR / "table_llm_chunks.json", "w", encoding="utf-8") as f:
+    json.dump(llm_chunks, f, indent=2, ensure_ascii=False)
+
+print(f"\n✅ {len(llm_chunks)} LLM sentence chunks → {OUTPUT_DIR}/table_llm_chunks.json")
+
+
+# ============================================================
+# CELL 13 — PREVIEW LLM OUTPUT vs RULE-BASED
+# ============================================================
+
+print("\n📋 LLM Output Preview:")
+print("─" * 60)
+for chunk in llm_chunks[:5]:
+    print(f"► {chunk['sentence']}")
+    print(f"  raw: {chunk['raw_row']}")
+    print()
+
+# Side-by-side comparison with old rule-based output (if you ran Cell 9)
+if semantic_chunks:
+    print("\n⚖️  Comparison (same row):")
+    print(f"  Rule-based : {semantic_chunks[0]['text']}")
+    print(f"  GPT-4      : {llm_chunks[0]['sentence']}")
+
+
+# ============================================================
+# CELL 14 — EXPORT: RAG corpus + Fine-tune JSONL
+# ============================================================
+
+# --- A) RAG corpus: clean sentences only ---
+rag_sentences = [c["sentence"] for c in llm_chunks]
+
+with open(OUTPUT_DIR / "rag_corpus_llm.txt", "w", encoding="utf-8") as f:
+    f.write("\n".join(rag_sentences))
+
+print(f"🔍 RAG corpus  : {len(rag_sentences)} sentences → rag_corpus_llm.txt")
+
+
+# --- B) Fine-tuning JSONL (OpenAI / Llama format) ---
+SYSTEM_PROMPT = "You are a helpful assistant that answers questions based on structured regulatory document data."
+
+def to_finetune_jsonl_llm(chunks: list[dict]) -> list[dict]:
+    records = []
+    for chunk in chunks:
+        row     = chunk["raw_row"]
+        keys    = list(row.keys())
+        if not keys:
+            continue
+
+        subject_col = keys[0]
+        subject_val = row.get(subject_col, "").strip()
+        if not subject_val:
+            continue
+
+        question = f"What are the details for {subject_col} '{subject_val}'?"
+
+        records.append({
+            "messages": [
+                {"role": "system",    "content": SYSTEM_PROMPT},
+                {"role": "user",      "content": question},
+                {"role": "assistant", "content": chunk["sentence"]},
+            ]
+        })
+    return records
+
+ft_records = to_finetune_jsonl_llm(llm_chunks)
+
+with jsonlines.open(OUTPUT_DIR / "finetune_llm.jsonl", mode="w") as writer:
+    writer.write_all(ft_records)
+
+print(f"🎯 Fine-tune    : {len(ft_records)} records → finetune_llm.jsonl")
+
+
+# ============================================================
+# CELL 15 — UNIFIED RAG INDEX (text + LLM table sentences)
+# ============================================================
+
+unified_llm = []
+
+# Page text chunks
+for page_num, text in results["text"].items():
+    if text.strip():
+        unified_llm.append({
+            "text"        : text,
+            "source_type" : "text",
+            "page"        : page_num,
+        })
+
+# LLM table sentence chunks
+for chunk in llm_chunks:
+    unified_llm.append({
+        "text"        : chunk["sentence"],
+        "source_type" : "table_llm",
+        "page"        : chunk["page"],
+        "table_idx"   : chunk["table_idx"],
+        "row_idx"     : chunk["row_idx"],
+    })
+
+with open(OUTPUT_DIR / "unified_rag_index_llm.json", "w", encoding="utf-8") as f:
+    json.dump(unified_llm, f, indent=2, ensure_ascii=False)
+
+text_ct  = sum(1 for c in unified_llm if c["source_type"] == "text")
+table_ct = sum(1 for c in unified_llm if c["source_type"] == "table_llm")
+print(f"\n🗂️  Unified RAG index: {len(unified_llm)} chunks")
+print(f"   Text  : {text_ct} | Table (LLM): {table_ct}")
+print(f"   → unified_rag_index_llm.json")
