@@ -1,0 +1,537 @@
+# “””
+CDTA Stage 3A — Topic Deduplication Experimentation Framework
+
+Tests permutations of:
+a) Embedding models (bge-m3, mpnet, all-MiniLM, etc.)
+b) Clustering methods (hierarchical avg/ward, HDBSCAN, BERTopic)
+c) Hyperparameters for each
+
+Validation:
+
+- Number of clusters
+- Cluster size distribution (mean, median, std, min, max)
+- Silhouette score
+- Davies-Bouldin index
+- Dendrogram (hierarchical only) saved as PNG
+- BERTopic topic word clouds (BERTopic only)
+- Full results CSV for comparison
+
+Usage:
+
+1. Set RAW_TOPICS_PATH to your JSON file of raw topics from Stage 2
+   Expected format: [{“name”: “…”, “description”: “…”}, …]
+1. pip install sentence-transformers scikit-learn hdbscan bertopic umap-learn matplotlib scipy
+1. python cdta_stage3a_experiments.py
+   “””
+
+import json
+import csv
+import time
+import warnings
+import os
+import numpy as np
+import matplotlib
+matplotlib.use(“Agg”)
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from itertools import product
+from dataclasses import dataclass, field, asdict
+from typing import Optional
+
+warnings.filterwarnings(“ignore”)
+
+# ─────────────────────────────────────────────
+
+# CONFIG — edit these
+
+# ─────────────────────────────────────────────
+
+RAW_TOPICS_PATH = “raw_topics.json”          # your Stage 2 output
+OUTPUT_DIR      = “stage3a_results”          # where all outputs go
+TOP_K_DENDRO    = 80                         # last-k merges shown in dendrogram
+SAMPLE_N        = None                       # set int to subsample for speed (None = use all)
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# ─────────────────────────────────────────────
+
+# EXPERIMENT GRID
+
+# ─────────────────────────────────────────────
+
+EMBEDDING_MODELS = [
+“BAAI/bge-m3”,
+“sentence-transformers/all-mpnet-base-v2”,
+“sentence-transformers/all-MiniLM-L6-v2”,
+“sentence-transformers/all-MiniLM-L12-v2”,
+“sentence-transformers/paraphrase-multilingual-mpnet-base-v2”,
+]
+
+HIERARCHICAL_CONFIGS = [
+# (linkage, threshold)
+(“average”, 0.85),
+(“average”, 0.80),
+(“average”, 0.75),
+(“average”, 0.70),
+(“average”, 0.65),
+(“ward”,    0.85),
+(“ward”,    0.80),
+(“ward”,    0.75),
+(“complete”,0.80),
+(“complete”,0.75),
+]
+
+HDBSCAN_CONFIGS = [
+# (min_cluster_size, min_samples, metric)
+(5,  2, “cosine”),
+(5,  2, “euclidean”),
+(10, 3, “cosine”),
+(10, 3, “euclidean”),
+(15, 5, “cosine”),
+(20, 5, “cosine”),
+(30, 5, “cosine”),
+]
+
+BERTOPIC_CONFIGS = [
+# (n_neighbors, n_components, min_dist, min_topic_size)
+(15, 5, 0.0, 10),
+(15, 5, 0.0, 20),
+(10, 5, 0.1, 10),
+(10, 5, 0.1, 15),
+(20, 5, 0.0, 10),
+]
+
+# ─────────────────────────────────────────────
+
+# DATA CLASSES
+
+# ─────────────────────────────────────────────
+
+@dataclass
+class ExperimentResult:
+run_id:            str
+embedding_model:   str
+embed_time_s:      float
+cluster_method:    str
+cluster_params:    str
+n_clusters:        int
+n_noise:           int          # HDBSCAN noise points (-1 label)
+cluster_time_s:    float
+silhouette:        Optional[float]
+davies_bouldin:    Optional[float]
+mean_size:         float
+median_size:       float
+std_size:          float
+min_size:          int
+max_size:          int
+pct_singleton:     float        # % clusters with size == 1
+dendrogram_path:   str = “”
+notes:             str = “”
+
+# ─────────────────────────────────────────────
+
+# HELPERS
+
+# ─────────────────────────────────────────────
+
+def load_topics(path: str):
+with open(path) as f:
+topics = json.load(f)
+texts = [f”{t[‘name’]}. {t.get(‘description’, ‘’)}” for t in topics]
+return topics, texts
+
+def embed(texts, model_name: str, sample_n=None):
+from sentence_transformers import SentenceTransformer
+if sample_n:
+texts = texts[:sample_n]
+print(f”  Embedding {len(texts)} topics with {model_name} …”)
+t0 = time.time()
+model = SentenceTransformer(model_name)
+vecs = model.encode(texts, batch_size=64, show_progress_bar=True,
+normalize_embeddings=True)
+elapsed = time.time() - t0
+print(f”  Done in {elapsed:.1f}s  shape={vecs.shape}”)
+return vecs, elapsed
+
+def cluster_stats(labels, vecs):
+“”“Returns (n_clusters, n_noise, sizes_array, silhouette, davies_bouldin).”””
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+
+```
+unique = set(labels)
+n_noise = int((labels == -1).sum()) if -1 in unique else 0
+unique_valid = [l for l in unique if l != -1]
+n_clusters = len(unique_valid)
+
+sizes = np.array([int((labels == l).sum()) for l in unique_valid])
+
+sil, db = None, None
+mask = labels != -1
+if n_clusters >= 2 and mask.sum() >= n_clusters:
+    try:
+        sil = float(silhouette_score(vecs[mask], labels[mask],
+                                     metric="cosine", sample_size=min(5000, mask.sum())))
+    except Exception as e:
+        sil = None
+    try:
+        db = float(davies_bouldin_score(vecs[mask], labels[mask]))
+    except Exception:
+        db = None
+
+return n_clusters, n_noise, sizes, sil, db
+```
+
+def make_run_id(emb_short, method, params_str):
+safe = params_str.replace(” “, “_”).replace(”,”, “-”).replace(”(”,””).replace(”)”,””)
+return f”{emb_short}**{method}**{safe}”
+
+def emb_shortname(model_name):
+return model_name.split(”/”)[-1]
+
+# ─────────────────────────────────────────────
+
+# CLUSTERING METHODS
+
+# ─────────────────────────────────────────────
+
+def run_hierarchical(vecs, linkage, threshold):
+from scipy.cluster.hierarchy import linkage as sp_linkage, fcluster, dendrogram
+from sklearn.metrics.pairwise import cosine_distances
+
+```
+t0 = time.time()
+dist = cosine_distances(vecs).astype(np.float64)
+# scipy linkage expects condensed distance matrix
+from scipy.spatial.distance import squareform
+condensed = squareform(dist, checks=False)
+Z = sp_linkage(condensed, method=linkage)
+labels = fcluster(Z, t=threshold, criterion="distance") - 1  # 0-indexed
+elapsed = time.time() - t0
+return labels, elapsed, Z
+```
+
+def run_hdbscan(vecs, min_cluster_size, min_samples, metric):
+import hdbscan as hdb
+
+```
+t0 = time.time()
+clusterer = hdb.HDBSCAN(
+    min_cluster_size=min_cluster_size,
+    min_samples=min_samples,
+    metric=metric,
+    core_dist_n_jobs=-1,
+)
+labels = clusterer.fit_predict(vecs)
+elapsed = time.time() - t0
+return labels.astype(int), elapsed
+```
+
+def run_bertopic(vecs, n_neighbors, n_components, min_dist, min_topic_size):
+from bertopic import BERTopic
+from umap import UMAP
+import hdbscan as hdb
+
+```
+t0 = time.time()
+umap_model = UMAP(n_neighbors=n_neighbors, n_components=n_components,
+                  min_dist=min_dist, metric="cosine", random_state=42)
+hdbscan_model = hdb.HDBSCAN(min_cluster_size=min_topic_size,
+                              metric="euclidean", prediction_data=True)
+topic_model = BERTopic(umap_model=umap_model,
+                        hdbscan_model=hdbscan_model,
+                        calculate_probabilities=False,
+                        verbose=False)
+# BERTopic needs raw texts — we pass dummy strings but use pre-computed embeddings
+dummy_texts = ["x"] * len(vecs)
+topics, _ = topic_model.fit_transform(dummy_texts, embeddings=vecs)
+labels = np.array(topics)
+elapsed = time.time() - t0
+return labels, elapsed
+```
+
+# ─────────────────────────────────────────────
+
+# DENDROGRAM
+
+# ─────────────────────────────────────────────
+
+def save_dendrogram(Z, run_id, output_dir, top_k=80):
+from scipy.cluster.hierarchy import dendrogram as sp_dendrogram
+
+```
+fig, ax = plt.subplots(figsize=(18, 6))
+sp_dendrogram(Z, ax=ax, truncate_mode="lastp", p=top_k,
+              leaf_rotation=90, leaf_font_size=7,
+              show_contracted=True, color_threshold=0.75 * max(Z[:, 2]))
+ax.set_title(f"Dendrogram (last {top_k} merges) — {run_id}", fontsize=9)
+ax.set_xlabel("Cluster index or (size)")
+ax.set_ylabel("Distance")
+plt.tight_layout()
+path = os.path.join(output_dir, f"dendro_{run_id}.png")
+fig.savefig(path, dpi=120)
+plt.close(fig)
+return path
+```
+
+# ─────────────────────────────────────────────
+
+# CLUSTER SIZE DISTRIBUTION PLOT
+
+# ─────────────────────────────────────────────
+
+def save_size_distribution(sizes, run_id, output_dir):
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+```
+axes[0].hist(sizes, bins=min(50, len(sizes)), color="#4C72B0", edgecolor="white")
+axes[0].set_title("Cluster Size Distribution")
+axes[0].set_xlabel("Cluster size")
+axes[0].set_ylabel("Count")
+
+axes[1].hist(sizes, bins=min(50, len(sizes)), color="#DD8452",
+             edgecolor="white", cumulative=True, density=True)
+axes[1].set_title("Cumulative Distribution")
+axes[1].set_xlabel("Cluster size")
+axes[1].set_ylabel("Fraction of clusters")
+
+fig.suptitle(run_id, fontsize=9, y=1.01)
+plt.tight_layout()
+path = os.path.join(output_dir, f"dist_{run_id}.png")
+fig.savefig(path, dpi=100, bbox_inches="tight")
+plt.close(fig)
+return path
+```
+
+# ─────────────────────────────────────────────
+
+# SUMMARY DASHBOARD
+
+# ─────────────────────────────────────────────
+
+def save_summary_dashboard(results, output_dir):
+“”“Scatter: silhouette vs n_clusters, coloured by method.”””
+valid = [r for r in results if r.silhouette is not None]
+if not valid:
+return
+
+```
+methods = list(set(r.cluster_method for r in valid))
+colors  = plt.cm.tab10(np.linspace(0, 1, len(methods)))
+cmap    = dict(zip(methods, colors))
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+for r in valid:
+    c = cmap[r.cluster_method]
+    axes[0].scatter(r.n_clusters, r.silhouette, color=c, alpha=0.7, s=50)
+axes[0].set_xlabel("Number of Clusters")
+axes[0].set_ylabel("Silhouette Score (higher = better)")
+axes[0].set_title("Silhouette vs N Clusters")
+from matplotlib.lines import Line2D
+handles = [Line2D([0],[0], marker='o', color='w', markerfacecolor=cmap[m],
+                  markersize=8, label=m) for m in methods]
+axes[0].legend(handles=handles, fontsize=7)
+
+for r in valid:
+    if r.davies_bouldin is not None:
+        c = cmap[r.cluster_method]
+        axes[1].scatter(r.n_clusters, r.davies_bouldin, color=c, alpha=0.7, s=50)
+axes[1].set_xlabel("Number of Clusters")
+axes[1].set_ylabel("Davies-Bouldin Index (lower = better)")
+axes[1].set_title("Davies-Bouldin vs N Clusters")
+axes[1].legend(handles=handles, fontsize=7)
+
+plt.tight_layout()
+path = os.path.join(output_dir, "summary_dashboard.png")
+fig.savefig(path, dpi=120)
+plt.close(fig)
+print(f"\nSummary dashboard saved → {path}")
+```
+
+# ─────────────────────────────────────────────
+
+# CSV EXPORT
+
+# ─────────────────────────────────────────────
+
+def save_csv(results, output_dir):
+path = os.path.join(output_dir, “all_results.csv”)
+if not results:
+return
+keys = list(asdict(results[0]).keys())
+with open(path, “w”, newline=””) as f:
+writer = csv.DictWriter(f, fieldnames=keys)
+writer.writeheader()
+for r in results:
+writer.writerow(asdict(r))
+print(f”Results CSV saved → {path}”)
+
+def print_leaderboard(results, top_n=10):
+valid = [r for r in results if r.silhouette is not None]
+if not valid:
+print(“No valid results with silhouette score.”)
+return
+ranked = sorted(valid, key=lambda r: r.silhouette, reverse=True)
+print(f”\n{’=’*90}”)
+print(f”TOP {top_n} CONFIGS BY SILHOUETTE SCORE”)
+print(f”{’=’*90}”)
+header = f”{‘Run ID’:<55} {‘N_Clust’:>7} {‘Sil’:>6} {‘DB’:>6} {‘Median’:>7} {‘Singletons’:>10}”
+print(header)
+print(”-” * 90)
+for r in ranked[:top_n]:
+db_str = f”{r.davies_bouldin:.3f}” if r.davies_bouldin else “  N/A”
+print(f”{r.run_id:<55} {r.n_clusters:>7} {r.silhouette:>6.3f} “
+f”{db_str:>6} {r.median_size:>7.1f} {r.pct_singleton:>9.1f}%”)
+
+# ─────────────────────────────────────────────
+
+# MAIN RUNNER
+
+# ─────────────────────────────────────────────
+
+def run_all():
+print(“Loading raw topics…”)
+topics, texts = load_topics(RAW_TOPICS_PATH)
+if SAMPLE_N:
+texts  = texts[:SAMPLE_N]
+topics = topics[:SAMPLE_N]
+print(f”Loaded {len(texts)} topics.”)
+
+```
+results = []
+embedding_cache = {}   # model_name -> (vecs, embed_time)
+
+# ── Pre-embed all models ──────────────────────────────────────────────
+print("\n=== Embedding Phase ===")
+for model_name in EMBEDDING_MODELS:
+    vecs, t = embed(texts, model_name, SAMPLE_N)
+    embedding_cache[model_name] = (vecs, t)
+
+# ── Hierarchical ─────────────────────────────────────────────────────
+print("\n=== Hierarchical Clustering ===")
+for model_name, (linkage, threshold) in product(EMBEDDING_MODELS, HIERARCHICAL_CONFIGS):
+    vecs, embed_t = embedding_cache[model_name]
+    params_str = f"linkage={linkage}_thresh={threshold}"
+    run_id = make_run_id(emb_shortname(model_name), "hierarchical", params_str)
+    print(f"  {run_id}")
+    try:
+        labels, clust_t, Z = run_hierarchical(vecs, linkage, threshold)
+        n_clust, n_noise, sizes, sil, db = cluster_stats(labels, vecs)
+
+        # save dendrogram only for avg linkage (most interpretable)
+        dend_path = ""
+        if linkage == "average":
+            dend_path = save_dendrogram(Z, run_id, OUTPUT_DIR, TOP_K_DENDRO)
+
+        save_size_distribution(sizes, run_id, OUTPUT_DIR)
+
+        results.append(ExperimentResult(
+            run_id=run_id,
+            embedding_model=model_name,
+            embed_time_s=round(embed_t, 2),
+            cluster_method=f"hierarchical_{linkage}",
+            cluster_params=params_str,
+            n_clusters=n_clust,
+            n_noise=0,
+            cluster_time_s=round(clust_t, 2),
+            silhouette=round(sil, 4) if sil else None,
+            davies_bouldin=round(db, 4) if db else None,
+            mean_size=round(float(sizes.mean()), 2),
+            median_size=round(float(np.median(sizes)), 2),
+            std_size=round(float(sizes.std()), 2),
+            min_size=int(sizes.min()),
+            max_size=int(sizes.max()),
+            pct_singleton=round(100 * float((sizes == 1).sum()) / len(sizes), 1),
+            dendrogram_path=dend_path,
+        ))
+    except Exception as e:
+        print(f"    ERROR: {e}")
+        results.append(ExperimentResult(
+            run_id=run_id, embedding_model=model_name, embed_time_s=0,
+            cluster_method=f"hierarchical_{linkage}", cluster_params=params_str,
+            n_clusters=-1, n_noise=0, cluster_time_s=0,
+            silhouette=None, davies_bouldin=None,
+            mean_size=0, median_size=0, std_size=0, min_size=0, max_size=0,
+            pct_singleton=0, notes=str(e)
+        ))
+
+# ── HDBSCAN ──────────────────────────────────────────────────────────
+print("\n=== HDBSCAN Clustering ===")
+for model_name, (mcs, ms, metric) in product(EMBEDDING_MODELS, HDBSCAN_CONFIGS):
+    vecs, embed_t = embedding_cache[model_name]
+    params_str = f"mcs={mcs}_ms={ms}_metric={metric}"
+    run_id = make_run_id(emb_shortname(model_name), "hdbscan", params_str)
+    print(f"  {run_id}")
+    try:
+        labels, clust_t = run_hdbscan(vecs, mcs, ms, metric)
+        n_clust, n_noise, sizes, sil, db = cluster_stats(labels, vecs)
+        save_size_distribution(sizes, run_id, OUTPUT_DIR)
+
+        results.append(ExperimentResult(
+            run_id=run_id,
+            embedding_model=model_name,
+            embed_time_s=round(embed_t, 2),
+            cluster_method="hdbscan",
+            cluster_params=params_str,
+            n_clusters=n_clust,
+            n_noise=n_noise,
+            cluster_time_s=round(clust_t, 2),
+            silhouette=round(sil, 4) if sil else None,
+            davies_bouldin=round(db, 4) if db else None,
+            mean_size=round(float(sizes.mean()), 2) if len(sizes) else 0,
+            median_size=round(float(np.median(sizes)), 2) if len(sizes) else 0,
+            std_size=round(float(sizes.std()), 2) if len(sizes) else 0,
+            min_size=int(sizes.min()) if len(sizes) else 0,
+            max_size=int(sizes.max()) if len(sizes) else 0,
+            pct_singleton=round(100 * float((sizes == 1).sum()) / max(len(sizes), 1), 1),
+            notes=f"noise_pts={n_noise}",
+        ))
+    except Exception as e:
+        print(f"    ERROR: {e}")
+
+# ── BERTopic ─────────────────────────────────────────────────────────
+print("\n=== BERTopic Clustering ===")
+for model_name, (nn, nc, md, mts) in product(EMBEDDING_MODELS, BERTOPIC_CONFIGS):
+    vecs, embed_t = embedding_cache[model_name]
+    params_str = f"nn={nn}_nc={nc}_md={md}_mts={mts}"
+    run_id = make_run_id(emb_shortname(model_name), "bertopic", params_str)
+    print(f"  {run_id}")
+    try:
+        labels, clust_t = run_bertopic(vecs, nn, nc, md, mts)
+        n_clust, n_noise, sizes, sil, db = cluster_stats(labels, vecs)
+        save_size_distribution(sizes, run_id, OUTPUT_DIR)
+
+        results.append(ExperimentResult(
+            run_id=run_id,
+            embedding_model=model_name,
+            embed_time_s=round(embed_t, 2),
+            cluster_method="bertopic",
+            cluster_params=params_str,
+            n_clusters=n_clust,
+            n_noise=n_noise,
+            cluster_time_s=round(clust_t, 2),
+            silhouette=round(sil, 4) if sil else None,
+            davies_bouldin=round(db, 4) if db else None,
+            mean_size=round(float(sizes.mean()), 2) if len(sizes) else 0,
+            median_size=round(float(np.median(sizes)), 2) if len(sizes) else 0,
+            std_size=round(float(sizes.std()), 2) if len(sizes) else 0,
+            min_size=int(sizes.min()) if len(sizes) else 0,
+            max_size=int(sizes.max()) if len(sizes) else 0,
+            pct_singleton=round(100 * float((sizes == 1).sum()) / max(len(sizes), 1), 1),
+            notes=f"noise_pts={n_noise}",
+        ))
+    except Exception as e:
+        print(f"    ERROR: {e}")
+
+# ── Save & report ─────────────────────────────────────────────────────
+save_csv(results, OUTPUT_DIR)
+save_summary_dashboard(results, OUTPUT_DIR)
+print_leaderboard(results, top_n=15)
+
+print(f"\nAll outputs in: {OUTPUT_DIR}/")
+print(f"Total experiments run: {len(results)}")
+return results
+```
+
+if **name** == “**main**”:
+run_all()
