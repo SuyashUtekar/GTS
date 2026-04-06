@@ -1,0 +1,152 @@
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from collections import Counter
+
+def prune_singletons(labels, vecs, raw_topics, absorption_threshold=0.82):
+    """
+    Post-clustering singleton pruning for Stage 3A.
+    
+    For each singleton cluster:
+      - Compute cosine similarity to all valid cluster centroids (size >= 2)
+      - If best_sim >= absorption_threshold: absorb into nearest cluster
+      - If best_sim <  absorption_threshold: keep as singleton (genuine unique topic)
+    
+    Args:
+        labels               : np.array of cluster labels, shape (n_topics,)
+        vecs                 : np.array of embeddings,     shape (n_topics, dim)
+        raw_topics           : list of dicts [{"name": ..., "description": ...}]
+        absorption_threshold : cosine similarity cutoff for absorption (default 0.82)
+    
+    Returns:
+        new_labels           : np.array with updated cluster assignments
+        report               : dict with pruning statistics
+    """
+
+    labels = np.array(labels)
+    new_labels = labels.copy()
+
+    # ── Step 1: identify valid clusters (size >= 2) and singletons ──────
+    size_map = Counter(labels)
+
+    valid_cluster_ids  = [l for l, sz in size_map.items() if sz >= 2]
+    singleton_ids      = [l for l, sz in size_map.items() if sz == 1]
+
+    print(f"Before pruning:")
+    print(f"  Total clusters     : {len(size_map)}")
+    print(f"  Valid (size >= 2)  : {len(valid_cluster_ids)}")
+    print(f"  Singletons         : {len(singleton_ids)}")
+
+    if not valid_cluster_ids:
+        print("  No valid clusters found — skipping pruning.")
+        return new_labels, {}
+
+    # ── Step 2: compute centroids for valid clusters only ────────────────
+    centroids = {}
+    for l in valid_cluster_ids:
+        mask = labels == l
+        centroids[l] = vecs[mask].mean(axis=0)
+
+    centroid_ids    = list(centroids.keys())
+    centroid_matrix = np.stack([centroids[l] for l in centroid_ids])
+    # shape: (n_valid_clusters, dim)
+
+    # ── Step 3: process each singleton ──────────────────────────────────
+    absorbed_log  = []   # (topic_name, from_label, to_label, similarity)
+    kept_log      = []   # (topic_name, label, best_sim_found)
+
+    for singleton_label in singleton_ids:
+        # get the index of this singleton topic in the original array
+        idx = int(np.where(labels == singleton_label)[0][0])
+        topic_vec  = vecs[idx].reshape(1, -1)
+        topic_name = raw_topics[idx]["name"]
+
+        # cosine similarity against all valid cluster centroids
+        sims = cosine_similarity(topic_vec, centroid_matrix)[0]
+        # shape: (n_valid_clusters,)
+
+        best_pos   = int(np.argmax(sims))
+        best_sim   = float(sims[best_pos])
+        best_label = centroid_ids[best_pos]
+
+        if best_sim >= absorption_threshold:
+            new_labels[idx] = best_label
+            absorbed_log.append({
+                "topic_name"      : topic_name,
+                "from_label"      : singleton_label,
+                "absorbed_into"   : best_label,
+                "similarity"      : round(best_sim, 4),
+                "absorbed_into_name": raw_topics[
+                    int(np.where(labels == best_label)[0][0])
+                ]["name"]
+            })
+        else:
+            kept_log.append({
+                "topic_name" : topic_name,
+                "label"      : singleton_label,
+                "best_sim"   : round(best_sim, 4)
+            })
+
+    # ── Step 4: report ───────────────────────────────────────────────────
+    final_size_map   = Counter(new_labels)
+    final_n_clusters = len(final_size_map)
+    final_singletons = sum(1 for sz in final_size_map.values() if sz == 1)
+
+    print(f"\nAfter pruning (threshold={absorption_threshold}):")
+    print(f"  Total clusters     : {final_n_clusters}")
+    print(f"  Singletons absorbed: {len(absorbed_log)}")
+    print(f"  Singletons kept    : {len(kept_log)}")
+    print(f"  Remaining singles  : {final_singletons}")
+
+    report = {
+        "absorption_threshold" : absorption_threshold,
+        "before_n_clusters"    : len(size_map),
+        "before_n_singletons"  : len(singleton_ids),
+        "after_n_clusters"     : final_n_clusters,
+        "after_n_singletons"   : final_singletons,
+        "n_absorbed"           : len(absorbed_log),
+        "n_kept"               : len(kept_log),
+        "absorbed_log"         : absorbed_log,
+        "kept_log"             : kept_log,
+    }
+
+    return new_labels, report
+
+
+def spot_check(report, n=15):
+    """
+    Print n absorbed singletons for manual verification.
+    Check that the topic merged into makes semantic sense.
+    """
+    print(f"\n── Spot Check: {n} absorbed singletons ──")
+    print(f"{'Topic':<40} {'Sim':>5}  →  Absorbed Into")
+    print("-" * 85)
+    for entry in report["absorbed_log"][:n]:
+        print(f"{entry['topic_name']:<40} "
+              f"{entry['similarity']:>5}  →  "
+              f"{entry['absorbed_into_name']}")
+
+    print(f"\n── Spot Check: 10 kept singletons (unique topics) ──")
+    print(f"{'Topic':<40} {'Best Sim Found':>15}")
+    print("-" * 60)
+    for entry in report["kept_log"][:10]:
+        print(f"{entry['topic_name']:<40} {entry['best_sim']:>15}")
+
+
+
+Usage:
+
+# -- comes directly from your clustering step --
+# labels : output of fcluster(Z, t=threshold, criterion='distance') - 1
+# vecs   : your embedded topic vectors
+# raw_topics : your raw_topics list
+
+new_labels, report = prune_singletons(
+    labels               = labels,
+    vecs                 = vecs,
+    raw_topics           = raw_topics,
+    absorption_threshold = 0.82       # start here for RBI corpus
+)
+
+# verify absorptions make semantic sense
+spot_check(report, n=15)
+
