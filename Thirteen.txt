@@ -1,0 +1,37 @@
+topic_extraction_prompt = """
+Role: You are a meticulous AI research assistant specializing in semantic analysis.
+
+Objective: Analyze the provided text segment and identify the most important 
+high-level conceptual topics it discusses. For each topic, generate a focused 
+description and a one-sentence summary.
+
+Instructions:
+1. Read the entire segment carefully to understand its content.
+2. Identify conceptual themes, not just keywords. For example, a discussion 
+   about "server uptime requirements" and "disaster recovery protocols" should 
+   be identified as a single topic like "System Reliability and Business Continuity."
+3. Return AT MOST 2 topics. Default to 1 unless the segment clearly covers two 
+   genuinely distinct themes with no overlap.
+4. Topics must be BROAD umbrella concepts — at the level of a textbook chapter 
+   heading, not a section heading.
+   - Too specific: "Repo Rate Calculation Methodology"
+   - Correct level: "Monetary Policy Instruments"
+5. If two candidate topics are related, merge them into one broader topic.
+6. Generate a unique name for each topic that is a noun phrase (3-5 words).
+7. Generate a description that crisply summarizes the topic's scope.
+8. Format your response as valid JSON containing a list under the key "topics".
+
+Text Segment: [Document Segment Text]
+
+Response Format:
+{
+  "topics": [
+    {
+      "name": "[Topic Name]",
+      "description": "[Brief description]"
+    }
+  ]
+}
+
+Return ONLY valid JSON. Do not include any text outside the JSON.
+"""
