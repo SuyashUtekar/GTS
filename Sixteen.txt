@@ -1,0 +1,113 @@
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.metrics import calinski_harabasz_score
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+
+def full_evaluation(embeddings, labels, method_name):
+    mask = labels != -1
+    clean_emb = embeddings[mask]
+    clean_labels = labels[mask]
+    
+    n_clusters = len(set(clean_labels))
+    n_noise = int(np.sum(~mask))
+    sizes = [np.sum(clean_labels == l) for l in set(clean_labels)]
+    
+    # Core metrics
+    sil = silhouette_score(clean_emb, clean_labels,
+                          metric='cosine', sample_size=2000, 
+                          random_state=42)
+    db  = davies_bouldin_score(clean_emb, clean_labels)
+    ch  = calinski_harabasz_score(clean_emb, clean_labels)
+    
+    # Cluster size distribution
+    avg_size   = np.mean(sizes)
+    median_size = np.median(sizes)
+    max_size   = np.max(sizes)
+    min_size   = np.min(sizes)
+    
+    # Size imbalance ratio (ideal close to 1.0)
+    imbalance = max_size / (avg_size + 1e-9)
+    
+    # Intra-cluster cohesion (avg similarity within clusters)
+    cohesion_scores = []
+    for label in set(clean_labels):
+        cluster_emb = clean_emb[clean_labels == label]
+        if len(cluster_emb) > 1:
+            sim = cosine_similarity(cluster_emb)
+            upper = sim[np.triu_indices_from(sim, k=1)]
+            cohesion_scores.append(upper.mean())
+    avg_cohesion = np.mean(cohesion_scores)
+    
+    # Inter-cluster separation (avg similarity between cluster centroids)
+    centroids = np.array([
+        clean_emb[clean_labels == l].mean(axis=0) 
+        for l in set(clean_labels)
+    ])
+    centroid_sim = cosine_similarity(centroids)
+    upper_c = centroid_sim[np.triu_indices_from(centroid_sim, k=1)]
+    avg_separation = upper_c.mean()
+    
+    results = {
+        'method': method_name,
+        'n_clusters': n_clusters,
+        'n_noise': n_noise,
+        'noise_pct': n_noise / len(labels) * 100,
+        'avg_size': round(avg_size, 1),
+        'median_size': median_size,
+        'max_size': max_size,
+        'min_size': min_size,
+        'imbalance_ratio': round(imbalance, 2),
+        'silhouette': round(sil, 4),
+        'davies_bouldin': round(db, 4),
+        'calinski_harabasz': round(ch, 2),
+        'avg_cohesion': round(avg_cohesion, 4),
+        'avg_separation': round(avg_separation, 4),
+        'cohesion_separation_gap': round(avg_cohesion - avg_separation, 4)
+    }
+    
+    return results
+
+
+def qualitative_inspection(topics, labels, embeddings, n_inspect=15):
+    """
+    For each cluster, show its topics so you can judge 
+    whether they belong together semantically
+    """
+    from sklearn.metrics.pairwise import cosine_similarity
+    import numpy as np
+    
+    unique_labels = [l for l in set(labels) if l != -1]
+    
+    # Sort clusters by size descending
+    cluster_sizes = {l: np.sum(labels == l) for l in unique_labels}
+    sorted_clusters = sorted(cluster_sizes.items(), 
+                            key=lambda x: x[1], reverse=True)
+    
+    print(f"Inspecting top {n_inspect} largest clusters:\n")
+    
+    cluster_quality_scores = []
+    
+    for cluster_id, size in sorted_clusters[:n_inspect]:
+        cluster_topics = [topics[i] for i in range(len(topics)) 
+                         if labels[i] == cluster_id]
+        cluster_emb = embeddings[labels == cluster_id]
+        
+        # Internal cohesion
+        if len(cluster_emb) > 1:
+            sim = cosine_similarity(cluster_emb)
+            upper = sim[np.triu_indices_from(sim, k=1)]
+            cohesion = upper.mean()
+        else:
+            cohesion = 1.0
+        
+        print(f"Cluster {cluster_id} | Size: {size} | "
+              f"Cohesion: {cohesion:.3f}")
+        print("Topics:")
+        for t in cluster_topics[:8]:  # show max 8 topics per cluster
+            print(f"   - {t}")
+        if len(cluster_topics) > 8:
+            print(f"   ... and {len(cluster_topics)-8} more")
+        print()
+    
+    return cluster_quality_scores
+
