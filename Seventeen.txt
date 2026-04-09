@@ -1,0 +1,61 @@
+import pandas as pd
+
+def compute_composite_score(results_list):
+    df = pd.DataFrame(results_list)
+    
+    # Normalize each metric to 0-1 scale
+    def norm(series, higher_better=True):
+        mn, mx = series.min(), series.max()
+        if mx == mn:
+            return pd.Series([0.5] * len(series))
+        normalized = (series - mn) / (mx - mn)
+        return normalized if higher_better else 1 - normalized
+    
+    df['score_silhouette']    = norm(df['silhouette'],              higher_better=True)
+    df['score_db']            = norm(df['davies_bouldin'],          higher_better=False)
+    df['score_ch']            = norm(df['calinski_harabasz'],       higher_better=True)
+    df['score_cohesion']      = norm(df['avg_cohesion'],            higher_better=True)
+    df['score_separation']    = norm(df['avg_separation'],          higher_better=False)
+    df['score_imbalance']     = norm(df['imbalance_ratio'],         higher_better=False)
+    df['score_noise']         = norm(df['noise_pct'],               higher_better=False)
+    df['score_cs_gap']        = norm(df['cohesion_separation_gap'], higher_better=True)
+    
+    # Target cluster count score
+    # For your corpus: target 50-120 clusters
+    target_low, target_high = 50, 120
+    def cluster_count_score(n):
+        if target_low <= n <= target_high:
+            return 1.0
+        elif n < target_low:
+            return n / target_low
+        else:
+            return target_high / n
+    df['score_cluster_count'] = df['n_clusters'].apply(cluster_count_score)
+    
+    # Weighted composite
+    # Weights reflect what matters most for RAG deduplication
+    weights = {
+        'score_silhouette':    0.25,   # most important overall
+        'score_cohesion':      0.20,   # topics within cluster similar
+        'score_separation':    0.15,   # clusters distinct from each other
+        'score_cs_gap':        0.15,   # cohesion >> separation gap
+        'score_cluster_count': 0.10,   # close to target range
+        'score_db':            0.05,
+        'score_ch':            0.05,
+        'score_imbalance':     0.03,
+        'score_noise':         0.02,
+    }
+    
+    df['composite_score'] = sum(
+        df[col] * w for col, w in weights.items()
+    )
+    
+    display_cols = ['method', 'n_clusters', 'n_noise', 
+                    'silhouette', 'avg_cohesion', 'avg_separation',
+                    'imbalance_ratio', 'composite_score']
+    
+    print(df[display_cols].sort_values(
+        'composite_score', ascending=False
+    ).to_string(index=False))
+    
+    return df.sort_values('composite_score', ascending=False)
