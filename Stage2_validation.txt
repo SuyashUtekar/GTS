@@ -1,0 +1,620 @@
+What Can Go Wrong in Stage 2
+First understand the failure modes specific to your 20B model:
+
+1. Over-extraction:    3+ topics per segment (your current problem)
+2. Too specific:       "RBI Circular DNBR 2019-20" instead of 
+                       "NBFC Regulatory Framework"
+3. Too generic:        "Banking" "Finance" "Regulation" 
+                       (useless for deduplication)
+4. Keyword leakage:    Extracting named entities not concepts
+5. Hallucination:      Topics not actually present in segment
+6. Inconsistent grain: Mix of broad and narrow topics
+7. Duplicate within    Same topic extracted twice from 
+   one segment:        one segment with different wording
+
+
+Layer 1: Statistical Validation
+Run this first — quick, no LLM needed:
+
+import numpy as np
+import pandas as pd
+from collections import Counter
+import re
+
+def statistical_validation(segments, topics_per_segment):
+    """
+    segments: list of segment texts
+    topics_per_segment: list of lists
+        [[topic1, topic2], [topic3], ...]
+        one list per segment
+    """
+    
+    all_topics = [t for seg_topics in topics_per_segment 
+                  for t in seg_topics]
+    
+    topics_per_seg_counts = [len(t) for t in topics_per_segment]
+    
+    # Basic counts
+    print("=" * 50)
+    print("BASIC STATISTICS")
+    print("=" * 50)
+    print(f"Total segments:          {len(segments)}")
+    print(f"Total raw topics:        {len(all_topics)}")
+    print(f"Topics per segment:")
+    print(f"  Mean:                  {np.mean(topics_per_seg_counts):.2f}")
+    print(f"  Median:                {np.median(topics_per_seg_counts):.2f}")
+    print(f"  Std:                   {np.std(topics_per_seg_counts):.2f}")
+    print(f"  Min:                   {np.min(topics_per_seg_counts)}")
+    print(f"  Max:                   {np.max(topics_per_seg_counts)}")
+    print(f"  Distribution:")
+    
+    dist = Counter(topics_per_seg_counts)
+    for count in sorted(dist.keys()):
+        pct = dist[count] / len(segments) * 100
+        bar = '█' * int(pct / 2)
+        print(f"    {count} topics: {dist[count]:4d} segs "
+              f"({pct:5.1f}%) {bar}")
+    
+    # Topic length analysis
+    topic_lengths = [len(t.split()) for t in all_topics]
+    print(f"\nTOPIC NAME LENGTH (words)")
+    print(f"  Mean:                  {np.mean(topic_lengths):.2f}")
+    print(f"  Too short (1 word):    "
+          f"{sum(1 for l in topic_lengths if l < 2)} "
+          f"({sum(1 for l in topic_lengths if l < 2)/len(all_topics)*100:.1f}%)")
+    print(f"  Good (2-5 words):      "
+          f"{sum(1 for l in topic_lengths if 2 <= l <= 5)} "
+          f"({sum(1 for l in topic_lengths if 2 <= l <= 5)/len(all_topics)*100:.1f}%)")
+    print(f"  Too long (6+ words):   "
+          f"{sum(1 for l in topic_lengths if l > 5)} "
+          f"({sum(1 for l in topic_lengths if l > 5)/len(all_topics)*100:.1f}%)")
+    
+    # Uniqueness
+    unique_topics = set(t.lower().strip() for t in all_topics)
+    print(f"\nUNIQUENESS")
+    print(f"  Unique topics:         {len(unique_topics)}")
+    print(f"  Exact duplicates:      {len(all_topics) - len(unique_topics)}")
+    print(f"  Uniqueness ratio:      "
+          f"{len(unique_topics)/len(all_topics)*100:.1f}%")
+    
+    # Specificity check - flag generic topics
+    generic_terms = {
+        'banking', 'finance', 'regulation', 'policy', 
+        'guidelines', 'framework', 'management', 'system',
+        'overview', 'introduction', 'general', 'other',
+        'various', 'multiple', 'different'
+    }
+    
+    generic_topics = [
+        t for t in all_topics 
+        if t.lower().strip() in generic_terms or
+        all(w.lower() in generic_terms for w in t.split())
+    ]
+    
+    print(f"\nSPECIFICITY CHECK")
+    print(f"  Overly generic topics: {len(generic_topics)}")
+    if generic_topics[:10]:
+        print(f"  Examples: {generic_topics[:10]}")
+    
+    # Named entity leakage (circular numbers, dates, names)
+    entity_pattern = re.compile(
+        r'\b(circular|notification|gazette|dated|'
+        r'january|february|march|april|may|june|'
+        r'july|august|september|october|november|december|'
+        r'\d{4}|\d+/\d+)\b',
+        re.IGNORECASE
+    )
+    
+    entity_topics = [
+        t for t in all_topics 
+        if entity_pattern.search(t)
+    ]
+    
+    print(f"\nNAMED ENTITY LEAKAGE")
+    print(f"  Topics with dates/refs: {len(entity_topics)}")
+    if entity_topics[:5]:
+        print(f"  Examples: {entity_topics[:5]}")
+    
+    return {
+        'total_topics': len(all_topics),
+        'mean_per_segment': np.mean(topics_per_seg_counts),
+        'uniqueness_ratio': len(unique_topics)/len(all_topics),
+        'generic_count': len(generic_topics),
+        'entity_leakage_count': len(entity_topics)
+    }
+
+
+Layer 2: Semantic Validation
+Check whether topics are actually present in their source segments:
+
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+
+def semantic_validation(segments, topics_per_segment, 
+                        embedding_model, threshold=0.35):
+    """
+    Validates each topic against its source segment
+    A topic should be semantically present in its segment
+    Low similarity = hallucinated or irrelevant topic
+    """
+    
+    model = SentenceTransformer('all-mpnet-base-v2')
+    
+    hallucination_flags = []
+    similarity_scores = []
+    
+    print("Computing topic-segment similarities...")
+    
+    for seg_idx, (segment, topics) in enumerate(
+        zip(segments, topics_per_segment)
+    ):
+        seg_embedding = model.encode([segment])
+        
+        for topic in topics:
+            topic_embedding = model.encode([topic])
+            sim = cosine_similarity(
+                seg_embedding, topic_embedding
+            )[0][0]
+            
+            similarity_scores.append(sim)
+            
+            if sim < threshold:
+                hallucination_flags.append({
+                    'segment_idx': seg_idx,
+                    'topic': topic,
+                    'similarity': round(float(sim), 4),
+                    'segment_preview': segment[:150] + '...'
+                })
+    
+    sim_array = np.array(similarity_scores)
+    
+    print("\n" + "=" * 50)
+    print("SEMANTIC VALIDATION RESULTS")
+    print("=" * 50)
+    print(f"Total topic-segment pairs: {len(similarity_scores)}")
+    print(f"\nSimilarity Distribution:")
+    print(f"  Mean:                  {sim_array.mean():.4f}")
+    print(f"  Median:                {np.median(sim_array):.4f}")
+    print(f"  Std:                   {sim_array.std():.4f}")
+    print(f"  Below 0.20 (bad):      "
+          f"{(sim_array < 0.20).sum()} "
+          f"({(sim_array < 0.20).mean()*100:.1f}%)")
+    print(f"  0.20-0.35 (weak):      "
+          f"{((sim_array >= 0.20) & (sim_array < 0.35)).sum()} "
+          f"({((sim_array >= 0.20) & (sim_array < 0.35)).mean()*100:.1f}%)")
+    print(f"  0.35-0.50 (moderate):  "
+          f"{((sim_array >= 0.35) & (sim_array < 0.50)).sum()} "
+          f"({((sim_array >= 0.35) & (sim_array < 0.50)).mean()*100:.1f}%)")
+    print(f"  Above 0.50 (good):     "
+          f"{(sim_array >= 0.50).sum()} "
+          f"({(sim_array >= 0.50).mean()*100:.1f}%)")
+    
+    print(f"\nHallucination Risk:")
+    print(f"  Topics below threshold ({threshold}): "
+          f"{len(hallucination_flags)} "
+          f"({len(hallucination_flags)/len(similarity_scores)*100:.1f}%)")
+    
+    if hallucination_flags:
+        print(f"\nWorst Examples (lowest similarity):")
+        sorted_flags = sorted(hallucination_flags, 
+                             key=lambda x: x['similarity'])
+        for flag in sorted_flags[:5]:
+            print(f"\n  Topic:    '{flag['topic']}'")
+            print(f"  Sim:      {flag['similarity']}")
+            print(f"  Segment:  '{flag['segment_preview']}'")
+    
+    return hallucination_flags, similarity_scores
+
+
+Layer 3: Granularity Validation
+Check if topics are at the right conceptual level:
+
+def granularity_validation(topics_per_segment, embedding_model):
+    """
+    Checks three granularity problems:
+    1. Too specific (document-level facts)
+    2. Too generic (meaningless broad terms)
+    3. Inconsistent grain within same segment
+    """
+    
+    model = SentenceTransformer('all-mpnet-base-v2')
+    
+    # Reference anchors for granularity calibration
+    # These are what GOOD RBI topics look like
+    good_examples = [
+        "Monetary Policy Transmission Mechanism",
+        "Capital Adequacy Requirements for Banks",
+        "Foreign Exchange Management Framework",
+        "KYC Compliance and Customer Due Diligence",
+        "Priority Sector Lending Norms",
+        "NBFC Regulatory Framework",
+        "Liquidity Risk Management",
+        "Payment Systems Oversight"
+    ]
+    
+    # Too specific examples
+    specific_examples = [
+        "RBI Circular DNBR 2019 dated March 15",
+        "Table 3 showing quarterly data",
+        "Section 4.2 amendment paragraph",
+        "Footnote reference to gazette notification"
+    ]
+    
+    # Too generic examples
+    generic_examples = [
+        "Banking",
+        "Finance",
+        "Regulation",
+        "Policy",
+        "Guidelines"
+    ]
+    
+    good_emb = model.encode(good_examples)
+    specific_emb = model.encode(specific_examples)
+    generic_emb = model.encode(generic_examples)
+    
+    all_topics = [t for seg in topics_per_segment for t in seg]
+    topic_embs = model.encode(all_topics)
+    
+    # Compute similarity to each reference set
+    sim_to_good = cosine_similarity(topic_embs, good_emb).max(axis=1)
+    sim_to_specific = cosine_similarity(
+        topic_embs, specific_emb
+    ).max(axis=1)
+    sim_to_generic = cosine_similarity(
+        topic_embs, generic_emb
+    ).max(axis=1)
+    
+    # Classify each topic
+    classifications = []
+    for i, topic in enumerate(all_topics):
+        scores = {
+            'good': sim_to_good[i],
+            'too_specific': sim_to_specific[i],
+            'too_generic': sim_to_generic[i]
+        }
+        classification = max(scores, key=scores.get)
+        classifications.append({
+            'topic': topic,
+            'classification': classification,
+            'good_score': round(float(sim_to_good[i]), 4),
+            'specific_score': round(float(sim_to_specific[i]), 4),
+            'generic_score': round(float(sim_to_generic[i]), 4)
+        })
+    
+    # Count by classification
+    class_counts = Counter(c['classification'] for c in classifications)
+    
+    print("=" * 50)
+    print("GRANULARITY VALIDATION")
+    print("=" * 50)
+    for cls, count in class_counts.items():
+        pct = count / len(all_topics) * 100
+        print(f"  {cls:15s}: {count:4d} ({pct:.1f}%)")
+    
+    # Show problematic examples
+    too_specific = [c for c in classifications 
+                   if c['classification'] == 'too_specific']
+    too_generic = [c for c in classifications 
+                  if c['classification'] == 'too_generic']
+    
+    if too_specific:
+        print(f"\nToo Specific Examples:")
+        for c in sorted(too_specific, 
+                       key=lambda x: x['specific_score'],
+                       reverse=True)[:5]:
+            print(f"  '{c['topic']}' (score: {c['specific_score']})")
+    
+    if too_generic:
+        print(f"\nToo Generic Examples:")
+        for c in sorted(too_generic,
+                       key=lambda x: x['generic_score'],
+                       reverse=True)[:5]:
+            print(f"  '{c['topic']}' (score: {c['generic_score']})")
+    
+    # Intra-segment consistency check
+    print(f"\nINTRA-SEGMENT CONSISTENCY")
+    inconsistent_segments = []
+    
+    for seg_idx, seg_topics in enumerate(topics_per_segment):
+        if len(seg_topics) < 2:
+            continue
+        seg_topic_embs = model.encode(seg_topics)
+        sim_matrix = cosine_similarity(seg_topic_embs)
+        upper = sim_matrix[np.triu_indices_from(sim_matrix, k=1)]
+        avg_internal_sim = upper.mean()
+        
+        # Topics within same segment should have some coherence
+        # but not be identical
+        if avg_internal_sim < 0.20:
+            inconsistent_segments.append({
+                'seg_idx': seg_idx,
+                'topics': seg_topics,
+                'internal_sim': round(float(avg_internal_sim), 4)
+            })
+    
+    print(f"  Segments with incoherent topic sets: "
+          f"{len(inconsistent_segments)} "
+          f"({len(inconsistent_segments)/len(topics_per_segment)*100:.1f}%)")
+    
+    if inconsistent_segments[:3]:
+        print(f"  Examples:")
+        for seg in inconsistent_segments[:3]:
+            print(f"    Seg {seg['seg_idx']} "
+                  f"(sim={seg['internal_sim']}): "
+                  f"{seg['topics']}")
+    
+    return classifications, inconsistent_segments
+
+
+Layer 4: Cross-Segment Coverage Validation
+Check if topics appear across multiple segments (they should for good deduplication):
+
+def coverage_validation(topics_per_segment, embedding_model,
+                       similarity_threshold=0.80):
+    """
+    Good topics should appear in multiple segments
+    Topics appearing in only one segment are too specific
+    or too rare to be useful after deduplication
+    """
+    
+    model = SentenceTransformer('all-mpnet-base-v2')
+    all_topics = [t for seg in topics_per_segment for t in seg]
+    topic_embs = model.encode(all_topics)
+    
+    # For each topic, count how many other topics are similar
+    # (proxy for how many segments discuss this concept)
+    sim_matrix = cosine_similarity(topic_embs)
+    np.fill_diagonal(sim_matrix, 0)
+    
+    similar_counts = (sim_matrix > similarity_threshold).sum(axis=1)
+    
+    singleton_topics = [
+        all_topics[i] for i in range(len(all_topics))
+        if similar_counts[i] == 0
+    ]
+    
+    well_covered_topics = [
+        all_topics[i] for i in range(len(all_topics))
+        if similar_counts[i] >= 3
+    ]
+    
+    print("=" * 50)
+    print("CROSS-SEGMENT COVERAGE")
+    print("=" * 50)
+    print(f"Topics with 0 similar topics (singletons): "
+          f"{len(singleton_topics)} "
+          f"({len(singleton_topics)/len(all_topics)*100:.1f}%)")
+    print(f"Topics with 1-2 similar topics:            "
+          f"{sum(1 for c in similar_counts if 1 <= c <= 2)} "
+          f"({sum(1 for c in similar_counts if 1<=c<=2)/len(all_topics)*100:.1f}%)")
+    print(f"Topics with 3+ similar topics (good):      "
+          f"{len(well_covered_topics)} "
+          f"({len(well_covered_topics)/len(all_topics)*100:.1f}%)")
+    
+    print(f"\nMost Common Topics (high coverage):")
+    top_covered = sorted(
+        zip(all_topics, similar_counts.tolist()),
+        key=lambda x: x[1], reverse=True
+    )[:10]
+    for topic, count in top_covered:
+        print(f"  {count:3d} similar: '{topic}'")
+    
+    print(f"\nSingleton Examples (likely too specific):")
+    for t in singleton_topics[:10]:
+        print(f"  '{t}'")
+    
+    return singleton_topics, well_covered_topics
+
+
+Layer 5: LLM-Based Spot Check
+Sample 50-100 topics and have your 20B model validate them:
+
+def llm_spot_check(segments, topics_per_segment, 
+                   llm_api_call_fn, n_samples=50):
+    """
+    Use your 20B model to validate a random sample
+    llm_api_call_fn: your function to call the hosted model
+    """
+    
+    # Flatten and sample
+    pairs = [
+        (seg, topic)
+        for seg, topics in zip(segments, topics_per_segment)
+        for topic in topics
+    ]
+    
+    sample_idx = np.random.choice(len(pairs), 
+                                  min(n_samples, len(pairs)), 
+                                  replace=False)
+    sample_pairs = [pairs[i] for i in sample_idx]
+    
+    validation_prompt = """You are validating topic extraction quality.
+
+Segment: {segment}
+
+Extracted Topic: {topic}
+
+Evaluate this topic on three criteria:
+1. PRESENT: Is this topic actually discussed in the segment? (yes/no)
+2. GRAIN: Is the granularity appropriate - conceptual not too specific or generic? (good/too_specific/too_generic)
+3. USEFUL: Would this topic help retrieve this segment in a RAG system? (yes/no)
+
+Respond in JSON only:
+{{"present": "yes/no", "grain": "good/too_specific/too_generic", "useful": "yes/no", "reason": "one sentence"}}"""
+    
+    results = []
+    
+    for segment, topic in sample_pairs:
+        prompt = validation_prompt.format(
+            segment=segment[:500],
+            topic=topic
+        )
+        
+        response = llm_api_call_fn(prompt)
+        
+        try:
+            import json
+            result = json.loads(response)
+            result['topic'] = topic
+            result['segment_preview'] = segment[:100]
+            results.append(result)
+        except:
+            results.append({
+                'topic': topic,
+                'error': 'parse_failed',
+                'raw': response
+            })
+    
+    # Aggregate
+    valid_results = [r for r in results if 'error' not in r]
+    
+    present_rate = sum(
+        1 for r in valid_results if r['present'] == 'yes'
+    ) / len(valid_results)
+    
+    useful_rate = sum(
+        1 for r in valid_results if r['useful'] == 'yes'
+    ) / len(valid_results)
+    
+    grain_dist = Counter(r['grain'] for r in valid_results)
+    
+    print("=" * 50)
+    print("LLM SPOT CHECK RESULTS")
+    print("=" * 50)
+    print(f"Sample size:      {len(valid_results)}")
+    print(f"Present rate:     {present_rate*100:.1f}%  "
+          f"(target: >85%)")
+    print(f"Useful rate:      {useful_rate*100:.1f}%  "
+          f"(target: >80%)")
+    print(f"Grain distribution:")
+    for grain, count in grain_dist.items():
+        print(f"  {grain:15s}: {count} "
+              f"({count/len(valid_results)*100:.1f}%)")
+    
+    # Show failures
+    failures = [r for r in valid_results 
+               if r['present'] == 'no' or r['useful'] == 'no']
+    if failures:
+        print(f"\nFailure Examples:")
+        for f in failures[:5]:
+            print(f"  Topic: '{f['topic']}'")
+            print(f"  Reason: {f.get('reason', 'N/A')}")
+            print()
+    
+    return results
+
+Master Validation Runner
+
+def run_full_validation(segments, topics_per_segment, 
+                        embedding_model, llm_fn=None):
+    
+    print("\n" + "🔍 STAGE 2 TOPIC VALIDATION REPORT")
+    print("=" * 50)
+    
+    # Layer 1: Statistical
+    print("\n📊 LAYER 1: STATISTICAL VALIDATION")
+    stat_results = statistical_validation(
+        segments, topics_per_segment
+    )
+    
+    # Layer 2: Semantic
+    print("\n🧠 LAYER 2: SEMANTIC VALIDATION")
+    hallucinations, sim_scores = semantic_validation(
+        segments, topics_per_segment, embedding_model
+    )
+    
+    # Layer 3: Granularity
+    print("\n🎯 LAYER 3: GRANULARITY VALIDATION")
+    classifications, inconsistent = granularity_validation(
+        topics_per_segment, embedding_model
+    )
+    
+    # Layer 4: Coverage
+    print("\n🌐 LAYER 4: COVERAGE VALIDATION")
+    singletons, well_covered = coverage_validation(
+        topics_per_segment, embedding_model
+    )
+    
+    # Layer 5: LLM spot check (optional)
+    if llm_fn:
+        print("\n🤖 LAYER 5: LLM SPOT CHECK")
+        llm_results = llm_spot_check(
+            segments, topics_per_segment, llm_fn
+        )
+    
+    # Final health score
+    print("\n" + "=" * 50)
+    print("OVERALL HEALTH SCORE")
+    print("=" * 50)
+    
+    all_topics = [t for seg in topics_per_segment for t in seg]
+    
+    health_metrics = {
+        'topics_per_segment':   stat_results['mean_per_segment'],
+        'uniqueness_ratio':     stat_results['uniqueness_ratio'],
+        'hallucination_rate':   len(hallucinations)/len(all_topics),
+        'singleton_rate':       len(singletons)/len(all_topics),
+        'generic_rate':         stat_results['generic_count']/len(all_topics)
+    }
+    
+    targets = {
+        'topics_per_segment':   ('<=', 2.0),
+        'uniqueness_ratio':     ('>=', 0.85),
+        'hallucination_rate':   ('<=', 0.10),
+        'singleton_rate':       ('<=', 0.20),
+        'generic_rate':         ('<=', 0.05)
+    }
+    
+    passed = 0
+    for metric, (direction, target) in targets.items():
+        value = health_metrics[metric]
+        ok = (value <= target if direction == '<=' 
+              else value >= target)
+        status = '✅' if ok else '❌'
+        if ok:
+            passed += 1
+        print(f"  {status} {metric:25s}: "
+              f"{value:.3f} (target {direction} {target})")
+    
+    print(f"\n  Health Score: {passed}/{len(targets)} checks passed")
+    
+    if passed < 3:
+        print("\n  ⚠️  RECOMMENDATION: Fix Stage 2 prompt before")
+        print("     proceeding to Stage 3A")
+    elif passed < 5:
+        print("\n  ⚠️  RECOMMENDATION: Proceed with caution,")
+        print("     filter bad topics before Stage 3A")
+    else:
+        print("\n  ✅ RECOMMENDATION: Stage 2 output quality")
+        print("     is good, proceed to Stage 3A")
+    
+    return health_metrics
+
+
+What the Results Tell You
+
+❌ High hallucination rate (>10%)  
+→ Your 20B model is inventing topics
+→ Fix: Add "only extract topics explicitly present 
+         in the text" to prompt
+
+❌ Mean topics per segment > 2.5   
+→ Over-extraction
+→ Fix: Add "maximum 2 topics per segment" constraint
+
+❌ High singleton rate (>30%)      
+→ Topics too specific to one document
+→ Fix: Add "topics should be general enough to 
+         appear across multiple RBI documents"
+
+❌ High generic rate (>10%)        
+→ Useless broad topics
+→ Fix: Add negative examples to prompt
+
+✅ All checks pass                 
+→ Proceed to Stage 3A with confidence
+
+
+
