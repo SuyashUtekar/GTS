@@ -1,0 +1,743 @@
+CANONICAL_GENERATION_PROMPT = """You are an expert knowledge architect specializing in regulatory and legal document analysis.
+
+## Task
+You are given a group of semantically related topic names and descriptions that have been automatically clustered together. Your job is to generate a single canonical topic name and comprehensive description that authoritatively represents the entire cluster.
+
+## Input Cluster
+Cluster contains {cluster_size} related topics:
+
+{topics_formatted}
+
+## Requirements for Canonical Name
+- Must be a precise noun phrase (2-6 words)
+- Must be specific enough to distinguish from other regulatory topics
+- Must be broad enough to encompass ALL topics in the cluster
+- Use formal domain language (e.g. "Priority Sector Lending Norms" not "Loans for Small Businesses")
+- Do NOT use vague words like: general, various, miscellaneous, other, multiple, related
+- Do NOT start with verbs
+- Capitalize each word
+
+## Requirements for Canonical Description
+- 2-3 sentences maximum
+- Sentence 1: Define what this topic covers at the highest level
+- Sentence 2: Specify the key subtopics or dimensions covered across the cluster
+- Sentence 3 (optional): Note any important boundaries or scope limitations
+- Must reflect ALL topics in the cluster, not just the most common ones
+- Use precise regulatory terminology
+- Do NOT copy-paste from input topics verbatim
+
+## Output Format
+Return ONLY valid JSON. No explanation, no preamble, no markdown:
+{{
+    "canonical_name": "<2-6 word noun phrase>",
+    "canonical_description": "<2-3 sentence description>",
+    "confidence": <0.0-1.0 float, your confidence this name captures all topics>
+}}"""
+
+
+FEW_SHOT_CANONICAL_PROMPT = """You are an expert knowledge architect specializing in regulatory and legal document analysis.
+
+## Task
+You are given a group of semantically related topic names and descriptions that have been automatically clustered together. Your job is to generate a single canonical topic name and comprehensive description that authoritatively represents the entire cluster.
+
+## Examples of Good Canonicalization
+
+### Example 1
+Input cluster (5 topics):
+1. [Repo Rate Decisions]: RBI's periodic decisions on the benchmark lending rate
+2. [Monetary Policy Committee Outcomes]: Outcomes and voting patterns of MPC meetings
+3. [Interest Rate Transmission]: How policy rate changes propagate to lending rates
+4. [Liquidity Adjustment Facility]: RBI's LAF corridor for managing short-term liquidity
+5. [Policy Rate Communication]: RBI's forward guidance and communication strategy
+
+Output:
+{{
+    "canonical_name": "Monetary Policy Framework and Rate Setting",
+    "canonical_description": "Covers RBI's mechanisms for formulating and implementing monetary policy, including the Monetary Policy Committee's rate-setting decisions and the Liquidity Adjustment Facility. Encompasses interest rate transmission dynamics, forward guidance practices, and the broader policy communication strategy. Scope includes both the institutional framework governing policy decisions and their operational implementation.",
+    "confidence": 0.92
+}}
+
+### Example 2
+Input cluster (4 topics):
+1. [KYC Documentation Requirements]: Documents required for customer identification
+2. [Customer Due Diligence]: Risk-based approach to verifying customer identity
+3. [Periodic KYC Updation]: Requirements for refreshing KYC records periodically
+4. [Video KYC Process]: Digital KYC verification via video-based identification
+
+Output:
+{{
+    "canonical_name": "KYC Compliance and Customer Due Diligence",
+    "canonical_description": "Encompasses the complete framework for customer identification and verification as mandated by RBI, including documentation standards, risk-based due diligence procedures, and digital verification mechanisms. Covers both initial onboarding requirements and ongoing KYC maintenance obligations for regulated entities. Includes traditional in-person and technology-enabled verification pathways.",
+    "confidence": 0.95
+}}
+
+### Example 3 (Heterogeneous cluster — lower confidence appropriate)
+Input cluster (6 topics):
+1. [Foreign Currency Accounts]: Rules governing FCY accounts for residents and NRIs
+2. [FEMA Compliance]: Compliance obligations under Foreign Exchange Management Act
+3. [Remittance Limits]: Permitted limits for outward and inward remittances
+4. [NRI Banking Services]: Banking products and services available to NRIs
+5. [Capital Account Transactions]: Regulations governing capital account convertibility
+6. [External Commercial Borrowings]: Framework for overseas borrowing by Indian entities
+
+Output:
+{{
+    "canonical_name": "Foreign Exchange Management and Cross-Border Transactions",
+    "canonical_description": "Covers the regulatory framework governing foreign exchange transactions, including FEMA compliance obligations, permitted capital and current account transactions, and remittance regulations. Encompasses specialized banking services for non-resident Indians, foreign currency account management, and external commercial borrowing norms. Reflects RBI's comprehensive oversight of cross-border financial flows.",
+    "confidence": 0.78
+}}
+
+---
+
+## Now Canonicalize This Cluster
+
+Cluster contains {cluster_size} related topics:
+
+{topics_formatted}
+
+## Requirements for Canonical Name
+- Must be a precise noun phrase (2-6 words)
+- Must be specific enough to distinguish from other regulatory topics
+- Must be broad enough to encompass ALL topics in the cluster
+- Use formal domain language
+- Do NOT use: general, various, miscellaneous, other, multiple, related
+- Do NOT start with verbs
+- Capitalize each word
+
+## Requirements for Canonical Description
+- 2-3 sentences maximum
+- Sentence 1: Define what this topic covers at the highest level
+- Sentence 2: Specify the key subtopics or dimensions covered across the cluster
+- Sentence 3 (optional): Scope boundaries or limitations
+- Must reflect ALL topics in the cluster
+- Do NOT copy-paste from input verbatim
+
+## Output Format
+Return ONLY valid JSON. No explanation, no preamble, no markdown:
+{{
+    "canonical_name": "<2-6 word noun phrase>",
+    "canonical_description": "<2-3 sentence description>",
+    "confidence": <0.0-1.0>
+}}"""
+
+
+What Can Go Wrong in Clusters
+Before the prompts, understand the four failure modes you’re validating against:
+
+1. OVER-MERGING    → Two distinct topics forced into one cluster
+                     e.g. "KYC Requirements" + "Monetary Policy" in same cluster
+                     
+2. UNDER-MERGING   → Same topic split across two clusters
+                     e.g. Cluster 12: "Repo Rate Policy"
+                          Cluster 31: "RBI Policy Rate Decisions"
+                          
+3. NOISE POLLUTION → One outlier topic dragging down cluster coherence
+                     e.g. 8 KYC topics + 1 unrelated "NBFC Registration" topic
+                     
+4. GENERIC CLUSTER → Topics too vague to be useful for RAG
+                     e.g. "Banking Regulations", "RBI Guidelines", "Compliance"
+
+
+Validation Prompt 1: Single Cluster Coherence Check
+
+CLUSTER_COHERENCE_PROMPT = """You are an expert validator of regulatory knowledge organization systems.
+
+## Task
+Evaluate whether the following group of topics genuinely belongs together as a single coherent knowledge cluster, or whether it has problems that need to be fixed.
+
+## Cluster Being Evaluated
+Canonical Name: {canonical_name}
+Canonical Description: {canonical_description}
+Cluster Size: {cluster_size} topics
+
+## Topics Inside This Cluster
+{topics_formatted}
+
+## Evaluation Criteria
+
+### Coherence Check
+Do ALL topics in this cluster share a single, well-defined regulatory concept?
+A good cluster has topics that:
+- Would naturally appear in the same section of a regulatory document
+- Would all be retrieved together when answering a single regulatory query
+- Share the same primary regulatory subject matter
+
+### Problems to Detect
+1. OVER_MERGED: Topics from clearly different regulatory domains are mixed together
+2. NOISE_TOPIC: One or more specific topics clearly do not belong with the rest
+3. TOO_GENERIC: The cluster is so broad it provides no retrieval value
+4. GOOD: Cluster is coherent and well-formed
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "verdict": "<GOOD | OVER_MERGED | NOISE_TOPIC | TOO_GENERIC>",
+    "confidence": <0.0-1.0>,
+    "reasoning": "<1-2 sentences explaining your verdict>",
+    "problematic_topics": ["<topic name>", ...],
+    "suggested_split_into": ["<sub-cluster concept 1>", "<sub-cluster concept 2>"],
+    "topics_to_remove": ["<topic name>", ...]
+}}
+
+Notes:
+- problematic_topics: only if OVER_MERGED or NOISE_TOPIC, else empty list
+- suggested_split_into: only if OVER_MERGED, else empty list
+- topics_to_remove: only if NOISE_TOPIC, else empty list
+- If verdict is GOOD, all lists should be empty"""
+
+Validation Prompt 2: Cross-Cluster Similarity Check
+This catches under-merging — clusters that should have been merged but weren’t:
+
+CROSS_CLUSTER_SIMILARITY_PROMPT = """You are an expert validator of regulatory knowledge organization systems.
+
+## Task
+Evaluate whether two clusters are truly distinct topics or whether they should be merged into one.
+
+## Cluster A
+Name: {name_a}
+Description: {desc_a}
+Example topics: {examples_a}
+
+## Cluster B  
+Name: {name_b}
+Description: {desc_b}
+Example topics: {examples_b}
+
+## Decision Criteria
+These clusters SHOULD BE MERGED if:
+- A regulatory expert would look them up under the same heading
+- Answering a query about one would require knowing the other
+- They represent the same concept at slightly different levels of abstraction
+- The only difference is phrasing, not substance
+
+These clusters SHOULD STAY SEPARATE if:
+- A compliance officer would treat them as distinct obligations
+- They appear in different sections or chapters of regulatory documents  
+- Knowing one does not require knowing the other
+- They have different regulatory consequences or stakeholders
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "verdict": "<MERGE | KEEP_SEPARATE>",
+    "confidence": <0.0-1.0>,
+    "reasoning": "<1-2 sentences>",
+    "merged_canonical_name": "<if MERGE: proposed unified name, else null>",
+    "merged_canonical_description": "<if MERGE: proposed unified description, else null>"
+}}"""
+
+Validation Prompt 3: Full Batch Audit
+For a high-level pass across all clusters at once — catches systemic issues:
+
+BATCH_AUDIT_PROMPT = """You are an expert validator of regulatory knowledge organization systems.
+
+## Task
+You are given a complete list of canonical topic names from a regulatory document corpus.
+Identify any systemic problems in this topic taxonomy.
+
+## Complete Topic List ({n_topics} topics)
+{all_topic_names}
+
+## What to Check
+
+### 1. Duplicate Detection
+Are any two topic names referring to the same regulatory concept despite different wording?
+
+### 2. Hierarchy Violations  
+Is any topic clearly a sub-topic of another? 
+(e.g. "KYC Video Verification" should be inside "KYC Compliance Framework", not a separate top-level topic)
+
+### 3. Missing Coverage
+Based on your knowledge of {domain} regulations, are there obviously important regulatory areas that seem to be missing from this taxonomy?
+
+### 4. Over-Granularity
+Are any topics too narrow to be useful as standalone retrieval units?
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "potential_duplicates": [
+        {{"topic_a": "<name>", "topic_b": "<name>", "reason": "<why they overlap>"}}
+    ],
+    "hierarchy_violations": [
+        {{"child_topic": "<name>", "should_be_under": "<name>", "reason": "<why>"}}
+    ],
+    "missing_coverage": [
+        {{"missing_topic": "<name>", "reason": "<why important>"}}
+    ],
+    "over_granular_topics": [
+        {{"topic": "<name>", "reason": "<why too narrow>"}}
+    ],
+    "overall_taxonomy_quality": "<GOOD | NEEDS_WORK | POOR>",
+    "overall_reasoning": "<2-3 sentences on overall quality>"
+}}"""
+
+full validation pipeline
+
+import json
+import re
+import time
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from itertools import combinations
+
+class ClusterValidator:
+    
+    def __init__(self, model_endpoint, similarity_threshold=0.75,
+                 delay=0.3):
+        self.endpoint = model_endpoint
+        self.similarity_threshold = similarity_threshold
+        self.delay = delay
+    
+    # --------------------------------------------------------
+    # Core API Call
+    # --------------------------------------------------------
+    
+    def call_llm(self, prompt, temperature=0.1, max_tokens=400):
+        import requests
+        response = requests.post(
+            self.endpoint,
+            json={
+                "prompt": prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            },
+            timeout=45
+        )
+        return response.json()['text'].strip()
+    
+    def parse_json_response(self, text):
+        text = re.sub(r'```json|```', '', text).strip()
+        try:
+            return json.loads(text)
+        except:
+            # Try to extract JSON object
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            raise ValueError(f"Could not parse JSON from: {text[:200]}")
+    
+    # --------------------------------------------------------
+    # Step 1: Single Cluster Coherence Validation
+    # --------------------------------------------------------
+    
+    def validate_single_cluster(self, cluster_id, canonical, topics):
+        
+        topics_formatted = "\n".join([
+            f"{i+1}. [{t.get('name', t)}]: {t.get('description', '')}"
+            for i, t in enumerate(topics[:20])
+        ])
+        
+        prompt = CLUSTER_COHERENCE_PROMPT.format(
+            canonical_name=canonical['canonical_name'],
+            canonical_description=canonical['canonical_description'],
+            cluster_size=len(topics),
+            topics_formatted=topics_formatted
+        )
+        
+        try:
+            response = self.call_llm(prompt)
+            result = self.parse_json_response(response)
+            result['cluster_id'] = cluster_id
+            result['validated'] = True
+            return result
+            
+        except Exception as e:
+            return {
+                'cluster_id': cluster_id,
+                'verdict': 'VALIDATION_FAILED',
+                'confidence': 0.0,
+                'reasoning': str(e),
+                'problematic_topics': [],
+                'suggested_split_into': [],
+                'topics_to_remove': [],
+                'validated': False
+            }
+    
+    def run_coherence_validation(self, canonical_topics):
+        """
+        Run single-cluster validation on all clusters.
+        Prioritizes large clusters and low-confidence ones first.
+        """
+        
+        print("=" * 50)
+        print("STEP 1: Single Cluster Coherence Validation")
+        print("=" * 50)
+        
+        # Sort by priority: large clusters + low confidence first
+        sorted_clusters = sorted(
+            canonical_topics.items(),
+            key=lambda x: (
+                -x[1]['cluster_size'],
+                x[1].get('confidence', 1.0)
+            )
+        )
+        
+        coherence_results = {}
+        verdict_counts = {
+            'GOOD': 0, 'OVER_MERGED': 0,
+            'NOISE_TOPIC': 0, 'TOO_GENERIC': 0,
+            'VALIDATION_FAILED': 0
+        }
+        
+        for cluster_id, canonical in sorted_clusters:
+            topics = canonical['source_topics']
+            
+            # Skip singletons - nothing to validate
+            if len(topics) == 1:
+                coherence_results[cluster_id] = {
+                    'cluster_id': cluster_id,
+                    'verdict': 'GOOD',
+                    'confidence': 1.0,
+                    'reasoning': 'Singleton cluster, auto-approved',
+                    'problematic_topics': [],
+                    'suggested_split_into': [],
+                    'topics_to_remove': [],
+                    'skipped': True
+                }
+                verdict_counts['GOOD'] += 1
+                continue
+            
+            result = self.validate_single_cluster(
+                cluster_id, canonical, topics
+            )
+            coherence_results[cluster_id] = result
+            verdict_counts[result['verdict']] = \
+                verdict_counts.get(result['verdict'], 0) + 1
+            
+            status_emoji = {
+                'GOOD': '✅',
+                'OVER_MERGED': '🔴',
+                'NOISE_TOPIC': '🟡',
+                'TOO_GENERIC': '🟠',
+                'VALIDATION_FAILED': '❌'
+            }.get(result['verdict'], '❓')
+            
+            print(f"{status_emoji} Cluster {cluster_id} "
+                  f"[{canonical['canonical_name']}] "
+                  f"→ {result['verdict']} "
+                  f"(conf: {result['confidence']:.2f})")
+            
+            if result['verdict'] != 'GOOD':
+                print(f"   Reason: {result['reasoning']}")
+            
+            time.sleep(self.delay)
+        
+        print(f"\nCoherence Summary: {verdict_counts}")
+        return coherence_results
+    
+    # --------------------------------------------------------
+    # Step 2: Cross-Cluster Similarity (Under-Merge Detection)
+    # --------------------------------------------------------
+    
+    def find_similar_cluster_pairs(self, canonical_topics, 
+                                    cluster_embeddings):
+        """
+        Use embedding similarity to find candidate pairs
+        for under-merge, then validate with LLM.
+        Avoids O(n^2) LLM calls by pre-filtering with embeddings.
+        """
+        
+        print("\n" + "=" * 50)
+        print("STEP 2: Cross-Cluster Similarity Check")
+        print("=" * 50)
+        
+        # Compute centroid for each cluster
+        cluster_ids = list(canonical_topics.keys())
+        centroids = np.array([
+            cluster_embeddings[cid].mean(axis=0)
+            for cid in cluster_ids
+        ])
+        
+        # Pairwise centroid similarity
+        sim_matrix = cosine_similarity(centroids)
+        
+        # Find pairs above threshold (excluding diagonal)
+        candidate_pairs = []
+        for i, j in combinations(range(len(cluster_ids)), 2):
+            sim = sim_matrix[i][j]
+            if sim >= self.similarity_threshold:
+                candidate_pairs.append((
+                    cluster_ids[i],
+                    cluster_ids[j],
+                    sim
+                ))
+        
+        # Sort by similarity descending
+        candidate_pairs.sort(key=lambda x: x[2], reverse=True)
+        
+        print(f"Found {len(candidate_pairs)} candidate pairs "
+              f"above similarity threshold {self.similarity_threshold}")
+        
+        # LLM validation for each candidate pair
+        cross_cluster_results = []
+        
+        for cid_a, cid_b, sim in candidate_pairs:
+            can_a = canonical_topics[cid_a]
+            can_b = canonical_topics[cid_b]
+            
+            # Get 3 example topics from each
+            examples_a = [t.get('name', t) for t in 
+                         can_a['source_topics'][:3]]
+            examples_b = [t.get('name', t) for t in 
+                         can_b['source_topics'][:3]]
+            
+            prompt = CROSS_CLUSTER_SIMILARITY_PROMPT.format(
+                name_a=can_a['canonical_name'],
+                desc_a=can_a['canonical_description'],
+                examples_a=", ".join(examples_a),
+                name_b=can_b['canonical_name'],
+                desc_b=can_b['canonical_description'],
+                examples_b=", ".join(examples_b)
+            )
+            
+            try:
+                response = self.call_llm(prompt)
+                result = self.parse_json_response(response)
+                result.update({
+                    'cluster_a': cid_a,
+                    'cluster_b': cid_b,
+                    'embedding_similarity': round(sim, 4),
+                    'name_a': can_a['canonical_name'],
+                    'name_b': can_b['canonical_name']
+                })
+                cross_cluster_results.append(result)
+                
+                emoji = '🔗' if result['verdict'] == 'MERGE' else '↔️'
+                print(f"{emoji} [{can_a['canonical_name']}] vs "
+                      f"[{can_b['canonical_name']}] "
+                      f"(sim={sim:.3f}) → {result['verdict']}")
+                
+                if result['verdict'] == 'MERGE':
+                    print(f"   Proposed: {result.get('merged_canonical_name')}")
+                    
+            except Exception as e:
+                print(f"❌ Validation failed for pair "
+                      f"({cid_a}, {cid_b}): {e}")
+            
+            time.sleep(self.delay)
+        
+        merge_count = sum(
+            1 for r in cross_cluster_results 
+            if r['verdict'] == 'MERGE'
+        )
+        print(f"\nCross-cluster summary: "
+              f"{merge_count}/{len(candidate_pairs)} pairs recommended for merge")
+        
+        return cross_cluster_results
+    
+    # --------------------------------------------------------
+    # Step 3: Full Batch Audit
+    # --------------------------------------------------------
+    
+    def run_batch_audit(self, canonical_topics, domain="RBI regulatory"):
+        
+        print("\n" + "=" * 50)
+        print("STEP 3: Full Taxonomy Batch Audit")
+        print("=" * 50)
+        
+        all_names = "\n".join([
+            f"{i+1}. {ct['canonical_name']}"
+            for i, ct in enumerate(canonical_topics.values())
+        ])
+        
+        prompt = BATCH_AUDIT_PROMPT.format(
+            n_topics=len(canonical_topics),
+            all_topic_names=all_names,
+            domain=domain
+        )
+        
+        try:
+            response = self.call_llm(
+                prompt, temperature=0.1, max_tokens=1000
+            )
+            result = self.parse_json_response(response)
+            
+            print(f"Overall taxonomy quality: "
+                  f"{result.get('overall_taxonomy_quality')}")
+            print(f"Reasoning: {result.get('overall_reasoning')}")
+            print(f"Potential duplicates: "
+                  f"{len(result.get('potential_duplicates', []))}")
+            print(f"Hierarchy violations: "
+                  f"{len(result.get('hierarchy_violations', []))}")
+            print(f"Missing coverage areas: "
+                  f"{len(result.get('missing_coverage', []))}")
+            print(f"Over-granular topics: "
+                  f"{len(result.get('over_granular_topics', []))}")
+            
+            return result
+            
+        except Exception as e:
+            print(f"Batch audit failed: {e}")
+            return None
+    
+    # --------------------------------------------------------
+    # Step 4: Generate Action Plan
+    # --------------------------------------------------------
+    
+    def generate_action_plan(self, coherence_results,
+                             cross_cluster_results,
+                             batch_audit_result):
+        """
+        Consolidate all validation results into 
+        a clear action plan.
+        """
+        
+        actions = {
+            'split': [],
+            'remove_noise': [],
+            'merge': [],
+            'review_generic': [],
+            'duplicates_from_audit': [],
+            'missing_topics': []
+        }
+        
+        # From coherence validation
+        for cid, result in coherence_results.items():
+            
+            if result['verdict'] == 'OVER_MERGED':
+                actions['split'].append({
+                    'cluster_id': cid,
+                    'reason': result['reasoning'],
+                    'split_into': result.get('suggested_split_into', []),
+                    'confidence': result['confidence']
+                })
+            
+            elif result['verdict'] == 'NOISE_TOPIC':
+                actions['remove_noise'].append({
+                    'cluster_id': cid,
+                    'topics_to_remove': result.get('topics_to_remove', []),
+                    'reason': result['reasoning'],
+                    'confidence': result['confidence']
+                })
+            
+            elif result['verdict'] == 'TOO_GENERIC':
+                actions['review_generic'].append({
+                    'cluster_id': cid,
+                    'reason': result['reasoning'],
+                    'confidence': result['confidence']
+                })
+        
+        # From cross-cluster validation
+        for result in cross_cluster_results:
+            if result['verdict'] == 'MERGE':
+                actions['merge'].append({
+                    'cluster_a': result['cluster_a'],
+                    'cluster_b': result['cluster_b'],
+                    'name_a': result['name_a'],
+                    'name_b': result['name_b'],
+                    'proposed_name': result.get('merged_canonical_name'),
+                    'proposed_desc': result.get('merged_canonical_description'),
+                    'similarity': result['embedding_similarity'],
+                    'confidence': result['confidence']
+                })
+        
+        # From batch audit
+        if batch_audit_result:
+            actions['duplicates_from_audit'] = \
+                batch_audit_result.get('potential_duplicates', [])
+            actions['missing_topics'] = \
+                batch_audit_result.get('missing_coverage', [])
+        
+        # Print action plan
+        print("\n" + "=" * 50)
+        print("ACTION PLAN")
+        print("=" * 50)
+        
+        print(f"\n🔴 SPLIT ({len(actions['split'])} clusters):")
+        for a in actions['split']:
+            print(f"   Cluster {a['cluster_id']} → "
+                  f"{a['split_into']}")
+        
+        print(f"\n🟡 REMOVE NOISE ({len(actions['remove_noise'])} clusters):")
+        for a in actions['remove_noise']:
+            print(f"   Cluster {a['cluster_id']} → "
+                  f"remove {a['topics_to_remove']}")
+        
+        print(f"\n🔗 MERGE ({len(actions['merge'])} pairs):")
+        for a in actions['merge']:
+            print(f"   [{a['name_a']}] + [{a['name_b']}]"
+                  f" → [{a['proposed_name']}]")
+        
+        print(f"\n🟠 REVIEW GENERIC ({len(actions['review_generic'])} clusters):")
+        for a in actions['review_generic']:
+            print(f"   Cluster {a['cluster_id']}")
+        
+        print(f"\n📋 MISSING TOPICS ({len(actions['missing_topics'])}):")
+        for m in actions['missing_topics']:
+            print(f"   - {m.get('missing_topic')}: {m.get('reason')}")
+        
+        return actions
+    
+    # --------------------------------------------------------
+    # Master Run Function
+    # --------------------------------------------------------
+    
+    def run_full_validation(self, canonical_topics,
+                            cluster_embeddings,
+                            domain="RBI regulatory"):
+        """
+        canonical_topics: dict {cluster_id: canonical_dict}
+        cluster_embeddings: dict {cluster_id: np.array}
+        """
+        
+        # Step 1
+        coherence_results = self.run_coherence_validation(
+            canonical_topics
+        )
+        
+        # Step 2
+        cross_cluster_results = self.find_similar_cluster_pairs(
+            canonical_topics, cluster_embeddings
+        )
+        
+        # Step 3
+        batch_audit = self.run_batch_audit(
+            canonical_topics, domain
+        )
+        
+        # Step 4
+        action_plan = self.generate_action_plan(
+            coherence_results, cross_cluster_results, batch_audit
+        )
+        
+        return {
+            'coherence_results': coherence_results,
+            'cross_cluster_results': cross_cluster_results,
+            'batch_audit': batch_audit,
+            'action_plan': action_plan
+        }
+
+validator = ClusterValidator(
+    model_endpoint=your_endpoint,
+    similarity_threshold=0.75,
+    delay=0.3
+)
+
+validation_output = validator.run_full_validation(
+    canonical_topics=canonical_topics,      # from Stage 3A
+    cluster_embeddings=cluster_embeddings,  # dict of np.arrays
+    domain="RBI regulatory"
+)
+
+action_plan = validation_output['action_plan']
+
+What the Output Tells You
+
+🔴 SPLIT     → re-run topic extraction on that cluster's topics
+               with a stricter prompt to force separation
+
+🟡 NOISE     → remove listed topics, reassign to nearest other cluster
+
+🔗 MERGE     → combine two clusters, use proposed canonical name
+
+🟠 GENERIC   → either split into specific subtopics or 
+               absorb into neighboring clusters
+
+📋 MISSING   → manually create a topic entry if genuinely absent
+               from your 20 documents, or note as a coverage gap
+
+
+
+
+
