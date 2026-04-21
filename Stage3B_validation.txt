@@ -1,0 +1,664 @@
+What Can Go Wrong in Relevance Mapping
+
+1. FALSE POSITIVE  → Segment marked relevant but isn't
+                     Causes: noisy synthesis, hallucination risk
+
+2. FALSE NEGATIVE  → Segment marked irrelevant but actually is
+                     Causes: incomplete synthesis, missing facts
+                     
+3. THRESHOLD BIAS  → Model saying true/false too liberally or 
+                     too conservatively across all topics
+                     
+4. TOPIC CONFUSION → Segment relevant to similar topic but 
+                     wrongly mapped to this one
+
+First: Understand Your Data
+
+import json
+import numpy as np
+from collections import defaultdict
+
+def analyze_relevance_mapping(relevance_json_path):
+    
+    with open(relevance_json_path, 'r') as f:
+        relevance_data = json.load(f)
+    
+    # Expected structure:
+    # {
+    #   "topic_id": {
+    #     "canonical_name": "...",
+    #     "relevant_segments": ["seg_id_1", ...],
+    #     "irrelevant_segments": ["seg_id_2", ...]
+    #   }
+    # }
+    # Adjust field names to match your actual JSON structure
+    
+    stats = {}
+    total_true = 0
+    total_false = 0
+    
+    topic_stats = []
+    
+    for topic_id, data in relevance_data.items():
+        n_relevant = len(data.get('relevant_segments', []))
+        n_irrelevant = len(data.get('irrelevant_segments', []))
+        n_total = n_relevant + n_irrelevant
+        
+        true_rate = n_relevant / n_total if n_total > 0 else 0
+        
+        total_true += n_relevant
+        total_false += n_irrelevant
+        
+        topic_stats.append({
+            'topic_id': topic_id,
+            'name': data.get('canonical_name', topic_id),
+            'n_relevant': n_relevant,
+            'n_irrelevant': n_irrelevant,
+            'n_total': n_total,
+            'true_rate': round(true_rate, 3)
+        })
+    
+    total = total_true + total_false
+    overall_true_rate = total_true / total if total > 0 else 0
+    
+    # Sort by true_rate to find outliers
+    topic_stats.sort(key=lambda x: x['true_rate'], reverse=True)
+    
+    print("=" * 55)
+    print("RELEVANCE MAPPING STATISTICS")
+    print("=" * 55)
+    print(f"Total topics:          {len(topic_stats)}")
+    print(f"Total mappings:        {total:,}")
+    print(f"Total true:            {total_true:,} ({overall_true_rate*100:.1f}%)")
+    print(f"Total false:           {total_false:,} ({(1-overall_true_rate)*100:.1f}%)")
+    print(f"\nPer-topic stats:")
+    print(f"  Avg relevant/topic:  {np.mean([t['n_relevant'] for t in topic_stats]):.1f}")
+    print(f"  Max relevant/topic:  {max(t['n_relevant'] for t in topic_stats)}")
+    print(f"  Min relevant/topic:  {min(t['n_relevant'] for t in topic_stats)}")
+    print(f"  Avg true rate:       {np.mean([t['true_rate'] for t in topic_stats]):.3f}")
+    
+    print(f"\nTop 10 topics by true rate (potential over-inclusion):")
+    for t in topic_stats[:10]:
+        print(f"  {t['true_rate']:.2f} | {t['n_relevant']:>4} segs | {t['name']}")
+    
+    print(f"\nBottom 10 topics by true rate (potential under-inclusion):")
+    for t in topic_stats[-10:]:
+        print(f"  {t['true_rate']:.2f} | {t['n_relevant']:>4} segs | {t['name']}")
+    
+    return topic_stats, relevance_data
+
+topic_stats, relevance_data = analyze_relevance_mapping('relevance_mapping.json')
+
+
+Validation Strategy
+Three-layer approach, each targeting a different failure mode:
+
+Layer 1: Statistical Outlier Detection  → finds suspicious topics
+Layer 2: LLM Spot Check Validation     → samples and re-judges
+Layer 3: Cross-Topic Consistency Check → finds confused mappings
+
+
+Layer 1: Statistical Outlier Detection
+
+def detect_statistical_outliers(topic_stats, 
+                                  high_threshold=0.60,
+                                  low_threshold=0.05,
+                                  min_segments=5):
+    """
+    Flags topics with suspiciously high or low true rates.
+    
+    For RBI corpus with 1300 segments and ~80 topics:
+    Expected true rate per topic: ~5-20%
+    (each topic should be relevant to some but not all segments)
+    """
+    
+    true_rates = [t['true_rate'] for t in topic_stats 
+                  if t['n_total'] >= min_segments]
+    
+    mean_rate = np.mean(true_rates)
+    std_rate = np.std(true_rates)
+    
+    print(f"\nTrue rate distribution:")
+    print(f"  Mean: {mean_rate:.3f}")
+    print(f"  Std:  {std_rate:.3f}")
+    print(f"  Expected range: "
+          f"{max(0, mean_rate - 2*std_rate):.3f} - "
+          f"{mean_rate + 2*std_rate:.3f}")
+    
+    outliers = {
+        'over_inclusive': [],   # too many true
+        'under_inclusive': [],  # too many false
+        'zero_relevant': [],    # no relevant segments at all
+        'all_relevant': []      # everything is relevant
+    }
+    
+    for t in topic_stats:
+        if t['n_total'] < min_segments:
+            continue
+            
+        if t['true_rate'] >= high_threshold:
+            outliers['over_inclusive'].append(t)
+        elif t['true_rate'] <= low_threshold:
+            outliers['under_inclusive'].append(t)
+        
+        if t['n_relevant'] == 0:
+            outliers['zero_relevant'].append(t)
+        if t['true_rate'] == 1.0:
+            outliers['all_relevant'].append(t)
+    
+    print(f"\n🔴 Over-inclusive topics "
+          f"(true_rate >= {high_threshold}): "
+          f"{len(outliers['over_inclusive'])}")
+    for t in outliers['over_inclusive']:
+        print(f"   {t['true_rate']:.2f} | {t['name']}")
+    
+    print(f"\n🔵 Under-inclusive topics "
+          f"(true_rate <= {low_threshold}): "
+          f"{len(outliers['under_inclusive'])}")
+    for t in outliers['under_inclusive']:
+        print(f"   {t['true_rate']:.2f} | {t['name']}")
+    
+    print(f"\n⚫ Zero relevant segments: "
+          f"{len(outliers['zero_relevant'])}")
+    for t in outliers['zero_relevant']:
+        print(f"   {t['name']}")
+    
+    return outliers
+
+
+Layer 2: LLM Spot Check Validation
+This is the core validation — re-judge a sample of mappings with a stronger prompt:
+
+RELEVANCE_VALIDATION_PROMPT = """You are a strict validator of regulatory document relevance mappings.
+
+## Context
+A binary relevance classifier has already judged whether a text segment is relevant to a regulatory topic.
+Your job is to independently verify whether that judgment was CORRECT.
+
+## Topic Being Validated
+Name: {topic_name}
+Description: {topic_description}
+
+## Text Segment
+Source Document: {doc_id}
+Segment Text:
+\"\"\"{segment_text}\"\"\"
+
+## Original Classifier Judgment: {original_judgment}
+
+## Your Task
+Re-evaluate independently: does this segment contain information that is DIRECTLY and SUBSTANTIVELY relevant to the topic?
+
+Relevance criteria (ALL must apply for TRUE):
+1. The segment discusses the topic's core subject matter, not just mentions it in passing
+2. The information would meaningfully contribute to a synthesized explanation of this topic
+3. A regulatory expert querying this topic would find this segment useful
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "your_judgment": "<true | false>",
+    "agrees_with_original": <true | false>,
+    "confidence": <0.0-1.0>,
+    "error_type": "<null | FALSE_POSITIVE | FALSE_NEGATIVE>",
+    "reasoning": "<1 sentence explaining your judgment>"
+}}"""
+
+
+def run_spot_check_validation(relevance_data, 
+                               segments_lookup,
+                               canonical_topics,
+                               model_endpoint,
+                               n_samples_per_topic=5,
+                               focus_on_outliers=None,
+                               delay=0.3):
+    """
+    relevance_data: your loaded JSON
+    segments_lookup: dict {seg_id: {'text': ..., 'doc_id': ...}}
+    canonical_topics: dict {topic_id: {'canonical_name': ..., 
+                                        'canonical_description': ...}}
+    focus_on_outliers: list of topic_ids to sample more heavily
+    """
+    
+    import random
+    import requests
+    
+    validation_results = defaultdict(list)
+    error_summary = {
+        'FALSE_POSITIVE': [],
+        'FALSE_NEGATIVE': [],
+        'CONFIRMED_TRUE': [],
+        'CONFIRMED_FALSE': []
+    }
+    
+    for topic_id, data in relevance_data.items():
+        
+        canonical = canonical_topics.get(topic_id, {})
+        topic_name = canonical.get('canonical_name', topic_id)
+        topic_desc = canonical.get('canonical_description', '')
+        
+        relevant_segs = data.get('relevant_segments', [])
+        irrelevant_segs = data.get('irrelevant_segments', [])
+        
+        # Determine sample size
+        # Sample more from outlier topics
+        is_outlier = (focus_on_outliers and 
+                      topic_id in focus_on_outliers)
+        n_sample = n_samples_per_topic * 2 if is_outlier else n_samples_per_topic
+        
+        # Stratified sampling: sample both true and false judgments
+        sample_true = random.sample(
+            relevant_segs, 
+            min(n_sample, len(relevant_segs))
+        )
+        sample_false = random.sample(
+            irrelevant_segs,
+            min(n_sample, len(irrelevant_segs))
+        )
+        
+        samples = (
+            [(s, 'true') for s in sample_true] + 
+            [(s, 'false') for s in sample_false]
+        )
+        
+        topic_errors = []
+        
+        for seg_id, original_judgment in samples:
+            
+            segment = segments_lookup.get(seg_id, {})
+            seg_text = segment.get('text', '')
+            doc_id = segment.get('doc_id', 'unknown')
+            
+            if not seg_text:
+                continue
+            
+            prompt = RELEVANCE_VALIDATION_PROMPT.format(
+                topic_name=topic_name,
+                topic_description=topic_desc,
+                doc_id=doc_id,
+                segment_text=seg_text[:800],  # truncate long segments
+                original_judgment=original_judgment
+            )
+            
+            try:
+                response = requests.post(
+                    model_endpoint,
+                    json={
+                        "prompt": prompt,
+                        "temperature": 0.0,  # deterministic
+                        "max_tokens": 150
+                    },
+                    timeout=30
+                )
+                
+                text = response.json()['text'].strip()
+                text = re.sub(r'```json|```', '', text).strip()
+                result = json.loads(text)
+                
+                result.update({
+                    'topic_id': topic_id,
+                    'topic_name': topic_name,
+                    'seg_id': seg_id,
+                    'original_judgment': original_judgment
+                })
+                
+                validation_results[topic_id].append(result)
+                
+                # Categorize
+                if not result['agrees_with_original']:
+                    error_type = result.get('error_type', 'UNKNOWN')
+                    error_summary[error_type].append(result)
+                else:
+                    confirmed = ('CONFIRMED_TRUE' 
+                                if original_judgment == 'true' 
+                                else 'CONFIRMED_FALSE')
+                    error_summary[confirmed].append(result)
+                    
+                time.sleep(delay)
+                
+            except Exception as e:
+                print(f"Validation failed: topic={topic_id}, "
+                      f"seg={seg_id}: {e}")
+        
+        # Per-topic error rate
+        topic_results = validation_results[topic_id]
+        if topic_results:
+            errors = [r for r in topic_results 
+                     if not r['agrees_with_original']]
+            error_rate = len(errors) / len(topic_results)
+            
+            if error_rate > 0.3:
+                print(f"⚠️  High error rate for topic "
+                      f"[{topic_name}]: {error_rate:.0%}")
+    
+    # Print summary
+    print("\n" + "=" * 55)
+    print("SPOT CHECK VALIDATION SUMMARY")
+    print("=" * 55)
+    
+    total_checked = sum(len(v) for v in validation_results.values())
+    total_errors = (len(error_summary['FALSE_POSITIVE']) + 
+                   len(error_summary['FALSE_NEGATIVE']))
+    
+    print(f"Total mappings checked:  {total_checked}")
+    print(f"Confirmed correct:       "
+          f"{len(error_summary['CONFIRMED_TRUE']) + len(error_summary['CONFIRMED_FALSE'])}")
+    print(f"Errors found:            {total_errors} "
+          f"({total_errors/total_checked*100:.1f}%)")
+    print(f"  False Positives:       "
+          f"{len(error_summary['FALSE_POSITIVE'])}")
+    print(f"  False Negatives:       "
+          f"{len(error_summary['FALSE_NEGATIVE'])}")
+    
+    return validation_results, error_summary
+
+
+
+Layer 3: Cross-Topic Confusion Check
+Catches segments mapped to the wrong topic — marked true for topic A when they actually belong to topic B:
+
+CROSS_TOPIC_CONFUSION_PROMPT = """You are a precise regulatory document classifier.
+
+## Task
+A segment has been marked as relevant to multiple topics simultaneously.
+Determine which topics it is GENUINELY relevant to versus which are false positives.
+
+## Segment Text
+\"\"\"{segment_text}\"\"\"
+
+## Topics This Segment Is Currently Mapped To
+{topics_list}
+
+## Instructions
+For each topic, judge: is this segment PRIMARILY about this topic, 
+TANGENTIALLY related, or NOT relevant?
+- PRIMARY: Core content of the segment addresses this topic directly
+- TANGENTIAL: Topic is mentioned but is not the main focus
+- NOT_RELEVANT: Mapping is incorrect, segment should be removed
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "assessments": [
+        {{
+            "topic_id": "<id>",
+            "topic_name": "<name>",
+            "relevance_level": "<PRIMARY | TANGENTIAL | NOT_RELEVANT>",
+            "reasoning": "<brief reason>"
+        }}
+    ],
+    "primary_topic": "<topic_id of the single most relevant topic>"
+}}"""
+
+
+def check_cross_topic_confusion(relevance_data,
+                                 segments_lookup,
+                                 canonical_topics,
+                                 model_endpoint,
+                                 max_topics_per_segment=3,
+                                 delay=0.3):
+    """
+    Finds segments mapped to many topics simultaneously
+    and validates whether those multi-mappings are correct.
+    """
+    
+    import requests
+    from collections import Counter
+    
+    # Build reverse index: segment -> list of topics it's marked true for
+    segment_to_topics = defaultdict(list)
+    
+    for topic_id, data in relevance_data.items():
+        for seg_id in data.get('relevant_segments', []):
+            segment_to_topics[seg_id].append(topic_id)
+    
+    # Find segments mapped to many topics
+    multi_mapped = {
+        seg_id: topic_ids 
+        for seg_id, topic_ids in segment_to_topics.items()
+        if len(topic_ids) > max_topics_per_segment
+    }
+    
+    print(f"\nSegments mapped to more than "
+          f"{max_topics_per_segment} topics: {len(multi_mapped)}")
+    
+    if not multi_mapped:
+        print("No cross-topic confusion detected.")
+        return {}
+    
+    # Distribution
+    mapping_counts = Counter(
+        len(v) for v in segment_to_topics.values()
+    )
+    print("Mapping count distribution:")
+    for count, freq in sorted(mapping_counts.items()):
+        print(f"  {count} topics: {freq} segments")
+    
+    confusion_results = {}
+    
+    # Sample the most heavily multi-mapped segments
+    sorted_multi = sorted(
+        multi_mapped.items(),
+        key=lambda x: len(x[1]),
+        reverse=True
+    )[:30]  # Check top 30 most confused segments
+    
+    for seg_id, topic_ids in sorted_multi:
+        
+        segment = segments_lookup.get(seg_id, {})
+        seg_text = segment.get('text', '')
+        
+        if not seg_text:
+            continue
+        
+        # Format topics list
+        topics_list = "\n".join([
+            f"{i+1}. ID: {tid} | "
+            f"Name: {canonical_topics.get(tid, {}).get('canonical_name', tid)}"
+            for i, tid in enumerate(topic_ids)
+        ])
+        
+        prompt = CROSS_TOPIC_CONFUSION_PROMPT.format(
+            segment_text=seg_text[:800],
+            topics_list=topics_list
+        )
+        
+        try:
+            response = requests.post(
+                model_endpoint,
+                json={
+                    "prompt": prompt,
+                    "temperature": 0.0,
+                    "max_tokens": 400
+                },
+                timeout=45
+            )
+            
+            text = response.json()['text'].strip()
+            text = re.sub(r'```json|```', '', text).strip()
+            result = json.loads(text)
+            result['seg_id'] = seg_id
+            result['n_original_mappings'] = len(topic_ids)
+            
+            not_relevant = [
+                a for a in result['assessments']
+                if a['relevance_level'] == 'NOT_RELEVANT'
+            ]
+            
+            if not_relevant:
+                print(f"⚠️  Segment {seg_id} "
+                      f"({len(topic_ids)} mappings): "
+                      f"{len(not_relevant)} false positives found")
+                for a in not_relevant:
+                    print(f"   Remove from: {a['topic_name']}")
+            
+            confusion_results[seg_id] = result
+            time.sleep(delay)
+            
+        except Exception as e:
+            print(f"Failed for segment {seg_id}: {e}")
+    
+    return confusion_results
+
+
+Final Report and Corrections
+
+def generate_validation_report(topic_stats,
+                                outliers,
+                                spot_check_results,
+                                error_summary,
+                                confusion_results,
+                                output_path='validation_report.json'):
+    
+    # Compute per-topic error rates from spot check
+    topic_error_rates = {}
+    for topic_id, results in spot_check_results.items():
+        if results:
+            errors = [r for r in results 
+                     if not r['agrees_with_original']]
+            topic_error_rates[topic_id] = {
+                'error_rate': len(errors) / len(results),
+                'false_positives': len([r for r in errors 
+                    if r.get('error_type') == 'FALSE_POSITIVE']),
+                'false_negatives': len([r for r in errors 
+                    if r.get('error_type') == 'FALSE_NEGATIVE']),
+                'total_checked': len(results)
+            }
+    
+    # Segments to remove from specific topics
+    corrections = defaultdict(lambda: {
+        'remove_from_relevant': [],
+        'add_to_relevant': []
+    })
+    
+    # From spot check false positives
+    for r in error_summary['FALSE_POSITIVE']:
+        corrections[r['topic_id']]['remove_from_relevant'].append(
+            r['seg_id']
+        )
+    
+    # From spot check false negatives
+    for r in error_summary['FALSE_NEGATIVE']:
+        corrections[r['topic_id']]['add_to_relevant'].append(
+            r['seg_id']
+        )
+    
+    # From confusion check
+    for seg_id, result in confusion_results.items():
+        for assessment in result.get('assessments', []):
+            if assessment['relevance_level'] == 'NOT_RELEVANT':
+                corrections[assessment['topic_id']]\
+                    ['remove_from_relevant'].append(seg_id)
+    
+    report = {
+        'summary': {
+            'total_topics': len(topic_stats),
+            'over_inclusive_topics': len(outliers['over_inclusive']),
+            'under_inclusive_topics': len(outliers['under_inclusive']),
+            'zero_relevant_topics': len(outliers['zero_relevant']),
+            'total_spot_checked': sum(
+                len(v) for v in spot_check_results.values()
+            ),
+            'false_positives_found': len(error_summary['FALSE_POSITIVE']),
+            'false_negatives_found': len(error_summary['FALSE_NEGATIVE']),
+            'segments_with_confusion': len(confusion_results)
+        },
+        'topic_error_rates': topic_error_rates,
+        'corrections': dict(corrections),
+        'high_risk_topics': [
+            tid for tid, stats in topic_error_rates.items()
+            if stats['error_rate'] > 0.3
+        ],
+        'outliers': {
+            'over_inclusive': [t['topic_id'] 
+                              for t in outliers['over_inclusive']],
+            'under_inclusive': [t['topic_id'] 
+                               for t in outliers['under_inclusive']]
+        }
+    }
+    
+    with open(output_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    
+    print("\n" + "=" * 55)
+    print("VALIDATION REPORT SUMMARY")
+    print("=" * 55)
+    print(f"High risk topics needing re-mapping: "
+          f"{len(report['high_risk_topics'])}")
+    print(f"Total corrections identified: "
+          f"{sum(len(c['remove_from_relevant']) + len(c['add_to_relevant']) for c in corrections.values())}")
+    print(f"Report saved to: {output_path}")
+    
+    return report
+
+
+Master Runner
+
+def validate_relevance_mapping(relevance_json_path,
+                                segments_lookup,
+                                canonical_topics,
+                                cluster_embeddings,
+                                model_endpoint):
+    
+    # Load and analyze
+    topic_stats, relevance_data = analyze_relevance_mapping(
+        relevance_json_path
+    )
+    
+    # Layer 1
+    outliers = detect_statistical_outliers(topic_stats)
+    
+    # Layer 2 - focus extra samples on outlier topics
+    outlier_ids = (
+        [t['topic_id'] for t in outliers['over_inclusive']] +
+        [t['topic_id'] for t in outliers['under_inclusive']]
+    )
+    
+    spot_results, error_summary = run_spot_check_validation(
+        relevance_data=relevance_data,
+        segments_lookup=segments_lookup,
+        canonical_topics=canonical_topics,
+        model_endpoint=model_endpoint,
+        n_samples_per_topic=5,
+        focus_on_outliers=outlier_ids
+    )
+    
+    # Layer 3
+    confusion_results = check_cross_topic_confusion(
+        relevance_data=relevance_data,
+        segments_lookup=segments_lookup,
+        canonical_topics=canonical_topics,
+        model_endpoint=model_endpoint
+    )
+    
+    # Report
+    report = generate_validation_report(
+        topic_stats, outliers,
+        spot_results, error_summary,
+        confusion_results
+    )
+    
+    return report
+
+What to Do With the Report
+
+error_rate > 0.30 for a topic  →  re-run Stage 3B for that 
+                                   topic with a stricter prompt
+
+false_positive rate high        →  add negative examples to 
+                                   your relevance check prompt
+
+false_negative rate high        →  your relevance prompt is 
+                                   too strict, loosen criteria
+
+zero_relevant topics            →  topic may be too narrow or
+                                   not covered in your 20 docs,
+                                   consider dropping it
+
+over_inclusive topics           →  check if canonical name is
+                                   too broad, may need splitting
+
+
+
+
+
