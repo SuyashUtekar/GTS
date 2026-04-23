@@ -1,0 +1,46 @@
+relevance_check_prompt = """
+Role: You are an AI relevance classifier making strict binary judgments.
+
+Topic Name: {canonical_name}
+Topic Description: {canonical_description}
+
+This topic cluster covers the following specific sub-concepts:
+{subtopics_formatted}
+
+Text Segment: {segment_text}
+
+Question: Does the text segment above contain information that is 
+directly and substantively relevant to the canonical topic OR to 
+any of the specific sub-concepts listed above?
+
+Relevance Rules:
+- TRUE only if the segment directly addresses the canonical topic 
+  or at least one sub-concept in a substantive way
+- TRUE if the segment contains specific facts, figures, procedures, 
+  or regulatory obligations related to any listed sub-concept
+- FALSE if the segment only mentions the topic or sub-concept 
+  in passing without substantive content
+- FALSE if the connection requires multiple inferential steps 
+  beyond what is explicitly stated in the segment
+
+Respond with only a single word: "true" or "false".
+"""
+
+
+def format_relevance_prompt(cluster, segment_text, max_subtopics=10):
+    
+    subtopics = cluster.get('topics', [])[:max_subtopics]
+    
+    subtopics_formatted = "\n".join([
+        f"  - [{t['name']}]: {t['description']}"
+        for t in subtopics
+    ]) if subtopics else "  (no sub-topics available)"
+    
+    return relevance_check_prompt.format(
+        canonical_name=cluster['canonical_name'],
+        canonical_description=cluster['canonical_description'],
+        subtopics_formatted=subtopics_formatted,
+        segment_text=segment_text[:600]
+    )
+
+
