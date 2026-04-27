@@ -1,0 +1,642 @@
+What Can Go Wrong in Stage 5
+
+1. HALLUCINATION      → Synthesized chunk contains facts not 
+                        present in any source segment
+
+2. INCOMPLETENESS     → Key information from source segments 
+                        missing from synthesized chunk
+
+3. INCOHERENCE        → Chunk reads as disconnected fragments,
+                        not a unified narrative
+
+4. CONTRADICTION      → Chunk states conflicting facts without
+                        flagging the conflict
+
+5. TOPIC DRIFT        → Chunk drifts into content outside the
+                        canonical topic scope
+
+6. OVER-COMPRESSION   → Too much information lost during 
+                        synthesis, chunk is too thin for RAG
+
+
+
+Validation Prompt 1: Faithfulness Check
+Checks if everything in the chunk is grounded in source segments:
+
+FAITHFULNESS_VALIDATION_PROMPT = """You are a strict fact-verification expert for regulatory documents.
+
+## Task
+You are given a synthesized knowledge chunk and the original source 
+segments it was created from. Your job is to verify that every 
+factual claim in the synthesized chunk is supported by the sources.
+
+## Topic
+Name: {canonical_name}
+Description: {canonical_description}
+
+## Source Segments
+{source_segments}
+
+## Synthesized Chunk
+{synthesized_chunk}
+
+## Verification Instructions
+Go through the synthesized chunk carefully. For each factual claim,
+regulatory figure, threshold, or procedural statement — check whether
+it can be traced back to at least one source segment.
+
+Identify:
+1. SUPPORTED claims: directly traceable to source segments
+2. UNSUPPORTED claims: present in chunk but NOT in any source segment
+   (these are potential hallucinations)
+3. CONTRADICTIONS: chunk states something that conflicts with sources
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "faithfulness_score": <0.0-1.0>,
+    "unsupported_claims": [
+        {{
+            "claim": "<exact text from chunk>",
+            "issue": "<why it is unsupported>"
+        }}
+    ],
+    "contradictions": [
+        {{
+            "chunk_statement": "<what chunk says>",
+            "source_statement": "<what source actually says>"
+        }}
+    ],
+    "verdict": "<PASS | FAIL>",
+    "reasoning": "<1-2 sentences>"
+}}
+
+Scoring guide:
+1.0 = all claims supported
+0.8-0.9 = minor unsupported details
+0.5-0.7 = several unsupported claims
+below 0.5 = significant hallucination present"""
+
+
+
+Validation Prompt 2: Completeness Check
+Checks if important source information was dropped during synthesis:
+
+COMPLETENESS_VALIDATION_PROMPT = """You are a regulatory document completeness auditor.
+
+## Task
+You are given a synthesized knowledge chunk and the original source 
+segments. Check whether the synthesis captured all important 
+information from the sources.
+
+## Topic
+Name: {canonical_name}
+Description: {canonical_description}
+
+## Source Segments
+{source_segments}
+
+## Synthesized Chunk
+{synthesized_chunk}
+
+## Instructions
+Identify important regulatory information present in the source 
+segments that is MISSING or significantly UNDERSTATED in the 
+synthesized chunk.
+
+Focus on:
+- Specific thresholds, percentages, or monetary limits
+- Regulatory deadlines or timelines
+- Applicability conditions (who it applies to)
+- Exceptions or carve-outs
+- Compliance obligations
+
+Do NOT flag:
+- Redundant restatements of the same fact
+- Background context that adds no regulatory value
+- Administrative boilerplate
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "completeness_score": <0.0-1.0>,
+    "missing_information": [
+        {{
+            "missing_item": "<what is missing>",
+            "source_seg_id": "<which segment contained it>",
+            "importance": "<HIGH | MEDIUM | LOW>"
+        }}
+    ],
+    "verdict": "<PASS | FAIL>",
+    "reasoning": "<1-2 sentences>"
+}}
+
+Scoring guide:
+1.0 = nothing important missing
+0.8-0.9 = minor details missing
+0.5-0.7 = notable gaps present
+below 0.5 = significant information loss"""
+
+
+Validation Prompt 3: Coherence and Quality Check
+Checks narrative quality — important for RAG generation:
+
+COHERENCE_VALIDATION_PROMPT = """You are a regulatory document quality reviewer.
+
+## Task
+Evaluate the quality of this synthesized knowledge chunk as a 
+standalone retrieval unit for a RAG system.
+
+## Topic
+Name: {canonical_name}
+Description: {canonical_description}
+
+## Synthesized Chunk
+{synthesized_chunk}
+
+## Evaluation Criteria
+
+### Coherence
+Does the chunk read as a unified, well-structured narrative?
+Or does it feel like disconnected fragments pasted together?
+
+### Topic Focus  
+Does the chunk stay focused on the canonical topic?
+Or does it drift into unrelated regulatory areas?
+
+### RAG Utility
+If this chunk were retrieved in response to a query about 
+the topic, would it provide a complete, usable answer?
+
+### Redundancy
+Does the chunk unnecessarily repeat the same facts multiple times?
+
+## Output Format
+Return ONLY valid JSON:
+{{
+    "coherence_score": <0.0-1.0>,
+    "topic_focus_score": <0.0-1.0>,
+    "rag_utility_score": <0.0-1.0>,
+    "redundancy_detected": <true | false>,
+    "topic_drift_detected": <true | false>,
+    "drift_description": "<what it drifted into, or null>",
+    "overall_quality": "<GOOD | ACCEPTABLE | POOR>",
+    "improvement_suggestion": "<1 sentence suggestion or null>"
+}}"""
+
+
+Full Validation Pipeline
+
+import json
+import re
+import time
+import numpy as np
+import requests
+from collections import defaultdict
+
+class Stage5Validator:
+    
+    def __init__(self, model_endpoint, delay=0.3):
+        self.endpoint = model_endpoint
+        self.delay = delay
+    
+    def call_llm(self, prompt, max_tokens=600):
+        response = requests.post(
+            self.endpoint,
+            json={
+                "prompt": prompt,
+                "temperature": 0.0,
+                "max_tokens": max_tokens
+            },
+            timeout=45
+        )
+        return response.json()['text'].strip()
+    
+    def parse_json(self, text):
+        text = re.sub(r'```json|```', '', text).strip()
+        try:
+            return json.loads(text)
+        except:
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+            raise ValueError(f"Cannot parse: {text[:200]}")
+    
+    def format_source_segments(self, source_segments, 
+                                max_segments=8,
+                                max_chars_per_seg=400):
+        """
+        source_segments: list of dicts 
+        {'seg_id':..., 'doc_id':..., 'text':...}
+        """
+        segments = source_segments[:max_segments]
+        formatted = []
+        for i, seg in enumerate(segments, 1):
+            text = seg['text'][:max_chars_per_seg]
+            formatted.append(
+                f"[Segment {i} | Doc: {seg.get('doc_id','?')} | "
+                f"ID: {seg.get('seg_id','?')}]\n{text}"
+            )
+        result = "\n\n".join(formatted)
+        if len(source_segments) > max_segments:
+            result += f"\n\n... and {len(source_segments)-max_segments} more segments"
+        return result
+    
+    # --------------------------------------------------
+    # Individual Validation Checks
+    # --------------------------------------------------
+    
+    def check_faithfulness(self, chunk_data, source_segments):
+        prompt = FAITHFULNESS_VALIDATION_PROMPT.format(
+            canonical_name=chunk_data['canonical_name'],
+            canonical_description=chunk_data['canonical_description'],
+            source_segments=self.format_source_segments(
+                source_segments
+            ),
+            synthesized_chunk=chunk_data['synthesized_text'][:1500]
+        )
+        try:
+            response = self.call_llm(prompt)
+            result = self.parse_json(response)
+            result['check'] = 'faithfulness'
+            return result
+        except Exception as e:
+            return {
+                'check': 'faithfulness',
+                'faithfulness_score': 0.0,
+                'verdict': 'ERROR',
+                'error': str(e)
+            }
+    
+    def check_completeness(self, chunk_data, source_segments):
+        prompt = COMPLETENESS_VALIDATION_PROMPT.format(
+            canonical_name=chunk_data['canonical_name'],
+            canonical_description=chunk_data['canonical_description'],
+            source_segments=self.format_source_segments(
+                source_segments
+            ),
+            synthesized_chunk=chunk_data['synthesized_text'][:1500]
+        )
+        try:
+            response = self.call_llm(prompt)
+            result = self.parse_json(response)
+            result['check'] = 'completeness'
+            return result
+        except Exception as e:
+            return {
+                'check': 'completeness',
+                'completeness_score': 0.0,
+                'verdict': 'ERROR',
+                'error': str(e)
+            }
+    
+    def check_coherence(self, chunk_data):
+        prompt = COHERENCE_VALIDATION_PROMPT.format(
+            canonical_name=chunk_data['canonical_name'],
+            canonical_description=chunk_data['canonical_description'],
+            synthesized_chunk=chunk_data['synthesized_text'][:1500]
+        )
+        try:
+            response = self.call_llm(prompt)
+            result = self.parse_json(response)
+            result['check'] = 'coherence'
+            return result
+        except Exception as e:
+            return {
+                'check': 'coherence',
+                'coherence_score': 0.0,
+                'overall_quality': 'ERROR',
+                'error': str(e)
+            }
+    
+    # --------------------------------------------------
+    # Per-Chunk Composite Score
+    # --------------------------------------------------
+    
+    def compute_chunk_score(self, faithfulness_result,
+                             completeness_result,
+                             coherence_result):
+        
+        f_score = faithfulness_result.get('faithfulness_score', 0)
+        c_score = completeness_result.get('completeness_score', 0)
+        
+        coh_score = (
+            coherence_result.get('coherence_score', 0) * 0.4 +
+            coherence_result.get('topic_focus_score', 0) * 0.3 +
+            coherence_result.get('rag_utility_score', 0) * 0.3
+        )
+        
+        # Weighted composite
+        # Faithfulness is most critical for RAG
+        composite = (
+            f_score * 0.45 +
+            c_score * 0.30 +
+            coh_score * 0.25
+        )
+        
+        # Determine overall verdict
+        if f_score < 0.7:
+            verdict = 'FAIL_FAITHFULNESS'
+        elif c_score < 0.6:
+            verdict = 'FAIL_COMPLETENESS'
+        elif coh_score < 0.5:
+            verdict = 'FAIL_COHERENCE'
+        elif composite >= 0.80:
+            verdict = 'PASS'
+        elif composite >= 0.65:
+            verdict = 'PASS_WITH_WARNINGS'
+        else:
+            verdict = 'FAIL'
+        
+        return round(composite, 4), verdict
+    
+    # --------------------------------------------------
+    # Full Validation Run
+    # --------------------------------------------------
+    
+    def validate_all_chunks(self, synthesized_chunks,
+                             segments_lookup,
+                             relevance_mapping,
+                             sample_size=None):
+        """
+        synthesized_chunks: dict or list of chunk objects
+        {
+            'cluster_id': '265',
+            'canonical_name': '...',
+            'canonical_description': '...',
+            'synthesized_text': '...'
+        }
+        
+        segments_lookup: dict {seg_id: {'text':..., 'doc_id':...}}
+        
+        relevance_mapping: your Stage 3B output
+        {cluster_id: {'relevant_segments': [seg_ids...]}}
+        """
+        
+        # Normalize to list
+        if isinstance(synthesized_chunks, dict):
+            chunks_list = list(synthesized_chunks.values())
+        else:
+            chunks_list = synthesized_chunks
+        
+        # Sample if requested
+        if sample_size and sample_size < len(chunks_list):
+            import random
+            chunks_list = random.sample(chunks_list, sample_size)
+            print(f"Validating sample of {sample_size} chunks")
+        else:
+            print(f"Validating all {len(chunks_list)} chunks")
+        
+        all_results = {}
+        summary = {
+            'PASS': [],
+            'PASS_WITH_WARNINGS': [],
+            'FAIL_FAITHFULNESS': [],
+            'FAIL_COMPLETENESS': [],
+            'FAIL_COHERENCE': [],
+            'FAIL': [],
+            'ERROR': []
+        }
+        
+        for i, chunk in enumerate(chunks_list):
+            
+            cluster_id = str(chunk.get('cluster_id', i))
+            canonical_name = chunk['canonical_name']
+            
+            print(f"\n[{i+1}/{len(chunks_list)}] "
+                  f"Validating: {canonical_name}")
+            
+            # Get source segments for this chunk
+            mapping = relevance_mapping.get(cluster_id, {})
+            relevant_seg_ids = mapping.get('relevant_segments', [])
+            
+            source_segments = [
+                {'seg_id': sid, **segments_lookup[sid]}
+                for sid in relevant_seg_ids
+                if sid in segments_lookup
+            ]
+            
+            # Run three checks
+            print(f"  Running faithfulness check...", end=' ')
+            faith_result = self.check_faithfulness(
+                chunk, source_segments
+            )
+            print(f"score={faith_result.get('faithfulness_score', 'ERR'):.2f}")
+            time.sleep(self.delay)
+            
+            print(f"  Running completeness check...", end=' ')
+            comp_result = self.check_completeness(
+                chunk, source_segments
+            )
+            print(f"score={comp_result.get('completeness_score', 'ERR'):.2f}")
+            time.sleep(self.delay)
+            
+            print(f"  Running coherence check...", end=' ')
+            coh_result = self.check_coherence(chunk)
+            print(f"quality={coh_result.get('overall_quality', 'ERR')}")
+            time.sleep(self.delay)
+            
+            # Composite score
+            composite, verdict = self.compute_chunk_score(
+                faith_result, comp_result, coh_result
+            )
+            
+            chunk_validation = {
+                'cluster_id': cluster_id,
+                'canonical_name': canonical_name,
+                'composite_score': composite,
+                'verdict': verdict,
+                'n_source_segments': len(source_segments),
+                'chunk_length': len(chunk['synthesized_text']),
+                'faithfulness': faith_result,
+                'completeness': comp_result,
+                'coherence': coh_result
+            }
+            
+            all_results[cluster_id] = chunk_validation
+            summary[verdict].append(cluster_id)
+            
+            emoji = {
+                'PASS': '✅',
+                'PASS_WITH_WARNINGS': '⚠️',
+                'FAIL_FAITHFULNESS': '🔴',
+                'FAIL_COMPLETENESS': '🟡',
+                'FAIL_COHERENCE': '🟠',
+                'FAIL': '❌',
+                'ERROR': '💥'
+            }.get(verdict, '❓')
+            
+            print(f"  {emoji} Verdict: {verdict} "
+                  f"(composite={composite:.3f})")
+        
+        # Print final summary
+        self._print_summary(summary, all_results)
+        
+        return all_results, summary
+    
+    def _print_summary(self, summary, all_results):
+        
+        total = sum(len(v) for v in summary.values())
+        scores = [r['composite_score'] 
+                 for r in all_results.values()
+                 if 'composite_score' in r]
+        
+        print("\n" + "=" * 55)
+        print("STAGE 5 VALIDATION SUMMARY")
+        print("=" * 55)
+        print(f"Total chunks validated: {total}")
+        print(f"\nResults:")
+        print(f"  ✅ PASS:                  {len(summary['PASS'])}")
+        print(f"  ⚠️  PASS WITH WARNINGS:   {len(summary['PASS_WITH_WARNINGS'])}")
+        print(f"  🔴 FAIL FAITHFULNESS:     {len(summary['FAIL_FAITHFULNESS'])}")
+        print(f"  🟡 FAIL COMPLETENESS:     {len(summary['FAIL_COMPLETENESS'])}")
+        print(f"  🟠 FAIL COHERENCE:        {len(summary['FAIL_COHERENCE'])}")
+        print(f"  ❌ FAIL:                  {len(summary['FAIL'])}")
+        print(f"  💥 ERROR:                 {len(summary['ERROR'])}")
+        
+        if scores:
+            print(f"\nScore Distribution:")
+            print(f"  Mean:   {np.mean(scores):.3f}")
+            print(f"  Median: {np.median(scores):.3f}")
+            print(f"  Min:    {np.min(scores):.3f}")
+            print(f"  Max:    {np.max(scores):.3f}")
+        
+        pass_rate = (
+            len(summary['PASS']) + 
+            len(summary['PASS_WITH_WARNINGS'])
+        ) / total * 100 if total > 0 else 0
+        
+        print(f"\nOverall pass rate: {pass_rate:.1f}%")
+    
+    # --------------------------------------------------
+    # Save and Action Plan
+    # --------------------------------------------------
+    
+    def save_results(self, all_results, output_path):
+        with open(output_path, 'w') as f:
+            json.dump(all_results, f, indent=2)
+        print(f"\nValidation results saved to {output_path}")
+    
+    def generate_action_plan(self, all_results, summary):
+        
+        actions = {
+            'resynthesize': [],    # re-run Stage 5
+            'add_segments': [],    # go back to Stage 3B
+            'manual_review': [],   # human review needed
+            'ready_for_indexing': []
+        }
+        
+        for cluster_id, result in all_results.items():
+            verdict = result['verdict']
+            name = result['canonical_name']
+            
+            if verdict == 'PASS':
+                actions['ready_for_indexing'].append(cluster_id)
+            
+            elif verdict == 'PASS_WITH_WARNINGS':
+                actions['ready_for_indexing'].append(cluster_id)
+                actions['manual_review'].append({
+                    'cluster_id': cluster_id,
+                    'name': name,
+                    'reason': 'Minor warnings — review before production'
+                })
+            
+            elif verdict == 'FAIL_FAITHFULNESS':
+                # Hallucination — must resynthesize with stricter prompt
+                actions['resynthesize'].append({
+                    'cluster_id': cluster_id,
+                    'name': name,
+                    'reason': 'Hallucination detected',
+                    'unsupported': result['faithfulness'].get(
+                        'unsupported_claims', []
+                    )
+                })
+            
+            elif verdict == 'FAIL_COMPLETENESS':
+                # Missing info — check if Stage 3B missed segments
+                missing = result['completeness'].get(
+                    'missing_information', []
+                )
+                high_priority_missing = [
+                    m for m in missing 
+                    if m.get('importance') == 'HIGH'
+                ]
+                
+                if high_priority_missing:
+                    # Likely Stage 3B missed relevant segments
+                    actions['add_segments'].append({
+                        'cluster_id': cluster_id,
+                        'name': name,
+                        'missing_items': high_priority_missing
+                    })
+                else:
+                    actions['resynthesize'].append({
+                        'cluster_id': cluster_id,
+                        'name': name,
+                        'reason': 'Synthesis dropped important content'
+                    })
+            
+            elif verdict in ('FAIL_COHERENCE', 'FAIL'):
+                actions['resynthesize'].append({
+                    'cluster_id': cluster_id,
+                    'name': name,
+                    'reason': verdict
+                })
+        
+        print("\n" + "=" * 55)
+        print("ACTION PLAN")
+        print("=" * 55)
+        print(f"✅ Ready for indexing:  "
+              f"{len(actions['ready_for_indexing'])}")
+        print(f"🔁 Resynthesize:        "
+              f"{len(actions['resynthesize'])}")
+        print(f"➕ Add segments (3B):   "
+              f"{len(actions['add_segments'])}")
+        print(f"👁  Manual review:       "
+              f"{len(actions['manual_review'])}")
+        
+        return actions
+
+
+Usage
+
+validator = Stage5Validator(
+    model_endpoint=your_endpoint,
+    delay=0.3
+)
+
+# Validate all chunks
+all_results, summary = validator.validate_all_chunks(
+    synthesized_chunks=your_synthesized_chunks,
+    segments_lookup=segments_lookup,
+    relevance_mapping=relevance_mapping,
+    sample_size=None    # set e.g. 20 for quick test run first
+)
+
+# Save
+validator.save_results(all_results, 'stage5_validation.json')
+
+# Action plan
+actions = validator.generate_action_plan(all_results, summary)
+
+
+What the Action Plan Tells You
+
+FAIL_FAITHFULNESS  →  Your synthesis LLM hallucinated
+                       Fix: add "do not add external knowledge"
+                       instruction more explicitly in Stage 5 prompt
+
+FAIL_COMPLETENESS  →  Two possible causes:
+  HIGH importance     → Stage 3B missed relevant segments,
+  items missing         go back and re-run relevance mapping
+                        with enhanced prompt
+  LOW importance      → Stage 5 synthesis over-compressed,
+  items missing         lower temperature or increase max tokens
+
+FAIL_COHERENCE     →  Too many source segments being forced
+                       into one chunk, synthesis loses narrative
+                       Fix: reduce segments fed per topic OR
+                       split into sub-chunks by sub-topic
+
+PASS_WITH_WARNINGS →  Safe to index but flag for human review
+                       before production deployment
