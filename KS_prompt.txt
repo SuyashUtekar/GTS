@@ -1,0 +1,69 @@
+knowledge_synthesis_prompt = """You are a regulatory document synthesizer.
+
+Your task: Read the source fragments below and write a single coherent 
+summary that captures all important information about the topic.
+
+Topic: {topic_name}
+Topic Description: {topic_description}
+
+Source Fragments:
+{fragments}
+
+Writing Rules:
+- Write ONLY what is stated in the source fragments above
+- Do NOT add any external knowledge or assumptions
+- Combine repeated facts into one clear statement
+- If two fragments contradict each other, write both versions 
+  and note the conflict explicitly
+- Write in plain continuous prose, no bullet points or headings
+- Minimum 3 sentences, maximum 15 sentences
+- Start directly with the topic content, not with phrases like 
+  "This document covers..." or "The following synthesizes..."
+
+Output a single JSON object. No text before or after the JSON:
+{{
+    "topic_id": "{topic_id}",
+    "title": "<concise title for this topic, 3-7 words>",
+    "text": "<your synthesized prose here>"
+}}
+
+Example output:
+{{
+    "topic_id": "topic_101",
+    "title": "Agency Commission in Government Transactions",
+    "text": "Agency banks appointed by RBI are eligible for commission on government transactions including revenue receipts, pension payments, and small savings schemes. Activities such as furnishing guarantees or managing autonomous body accounts are excluded from commission eligibility. Commission rates vary by transaction type, with pension disbursements attracting higher rates when fully managed by the bank."
+}}"""
+
+
+REMOVED: "Role: You are an expert AI knowledge synthesizer"
+REASON:  Generic role preamble wastes context on small models
+         Replaced with direct task statement
+
+REMOVED: "Objective:" section as separate block  
+REASON:  Redundant with the task statement above it
+
+CHANGED: 6 numbered instructions → 6 focused writing rules
+REASON:  "Instructions" label triggers list-completion behavior
+         in 20B models causing them to enumerate rather than write
+         "Writing Rules" label is more directive
+
+ADDED:   "Minimum 3 sentences, maximum 15 sentences"
+REASON:  Without length guidance, 20B models either write one 
+         sentence or run on indefinitely — primary cause of 
+         empty or truncated outputs
+
+ADDED:   "Start directly with topic content, not with phrases like..."
+REASON:  20B models waste tokens on preamble phrases which
+         can cause max_token cutoff before real content appears
+
+CHANGED: "Respond ONLY with valid JSON" → moved to end, simplified
+REASON:  Putting JSON instruction at top makes model focus on 
+         format over content — reversed order fixes this
+
+REMOVED: Incorrect output example
+REASON:  Some 20B models pattern-match to negative examples
+         despite "do NOT" instruction — safer to remove entirely
+
+KEPT:    Correct output example
+REASON:  Single concrete example is the most reliable instruction
+         for 20B models — more effective than all written rules
