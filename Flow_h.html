@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agentic Flow – Live Example Walkthrough</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f7f4ef;
+  --paper: #ffffff;
+  --ink: #1a1a2e;
+  --ink2: #2d2d44;
+  --muted: #7a7a9a;
+  --border: #e4e0d8;
+  --teal: #0d9488;
+  --teal-light: #ccfbf1;
+  --amber: #d97706;
+  --amber-light: #fef3c7;
+  --rose: #e11d48;
+  --rose-light: #fff1f2;
+  --blue: #2563eb;
+  --blue-light: #dbeafe;
+  --violet: #7c3aed;
+  --violet-light: #ede9fe;
+  --green: #16a34a;
+  --green-light: #dcfce7;
+  --slate: #475569;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Outfit', sans-serif;
+  min-height: 100vh;
+  padding: 0 0 80px;
+}
+
+/* Noise texture overlay */
+body::after {
+  content:'';
+  position:fixed; inset:0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events:none; z-index:9999;
+}
+
+/* ── HERO ── */
+.hero {
+  background: var(--ink);
+  padding: 48px 40px 52px;
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content:'';
+  position:absolute;
+  top:-80px; right:-80px;
+  width:360px; height:360px;
+  border-radius:50%;
+  background: radial-gradient(circle, #0d948830, transparent 65%);
+}
+.hero::after {
+  content:'';
+  position:absolute;
+  bottom:-60px; left:20%;
+  width:200px; height:200px;
+  border-radius:50%;
+  background: radial-gradient(circle, #d9770620, transparent 65%);
+}
+.hero-inner { max-width:900px; margin:0 auto; position:relative; z-index:1; }
+.hero-badge {
+  display:inline-flex; align-items:center; gap:8px;
+  background:#ffffff12;
+  border: 1px solid #ffffff25;
+  color: #94a3b8;
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px; letter-spacing:2px;
+  padding: 5px 14px; border-radius:2px;
+  margin-bottom:20px;
+}
+.hero h1 {
+  font-size: clamp(26px,4vw,44px);
+  font-weight:800; color:#fff;
+  line-height:1.15; margin-bottom:14px;
+}
+.hero h1 em { color: #2dd4bf; font-style:normal; }
+.hero-sub { color:#94a3b8; font-size:15px; line-height:1.7; max-width:620px; }
+.query-bubble {
+  margin-top:28px;
+  background:#ffffff0d;
+  border:1px solid #ffffff20;
+  border-radius:12px;
+  padding:18px 22px;
+  display:inline-flex; align-items:center; gap:14px;
+}
+.query-avatar {
+  width:36px; height:36px; border-radius:50%;
+  background: linear-gradient(135deg, #0d9488, #2563eb);
+  display:flex; align-items:center; justify-content:center;
+  font-size:16px; flex-shrink:0;
+}
+.query-text { color:#fff; font-size:15px; font-weight:500; }
+.query-text span { color:#fbbf24; font-style:italic; }
+
+/* ── MAIN CONTENT ── */
+.main { max-width:900px; margin:0 auto; padding:0 20px; }
+
+/* ── PROGRESS BAR ── */
+.progress-nav {
+  position: sticky;
+  top: 0; z-index: 100;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 20px;
+  margin: 0 -20px 40px;
+}
+.progress-inner { max-width:900px; margin:0 auto; display:flex; align-items:center; gap:6px; }
+.prog-step {
+  flex:1; height:4px; border-radius:2px;
+  background: var(--border);
+  transition: background 0.4s;
+  cursor:pointer;
+  position:relative;
+}
+.prog-step.active { background: var(--teal); }
+.prog-step.done { background: var(--ink2); }
+.prog-label {
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; color:var(--muted);
+  white-space:nowrap;
+  margin-left: 10px;
+}
+.prog-step-num {
+  position:absolute; top:-18px; left:50%; transform:translateX(-50%);
+  font-family:'JetBrains Mono',monospace;
+  font-size:9px; color:var(--muted);
+  opacity:0; transition:opacity 0.2s;
+}
+.prog-step:hover .prog-step-num { opacity:1; }
+
+/* ── AGENT STEP CARDS ── */
+.step-wrapper { margin-bottom:32px; }
+
+.step-card {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius:16px;
+  overflow:hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  opacity:0.35;
+  transition: opacity 0.4s, transform 0.4s, box-shadow 0.3s;
+  transform: translateY(6px);
+}
+.step-card.unlocked {
+  opacity:1; transform:translateY(0);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.09);
+}
+.step-card.active-card {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px #0d948820, 0 8px 32px rgba(0,0,0,0.12);
+}
+
+.step-header-bar {
+  display:flex; align-items:center; gap:14px;
+  padding:18px 24px;
+  border-bottom:1px solid var(--border);
+  cursor:pointer;
+  user-select:none;
+}
+.step-num {
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px; font-weight:600;
+  padding:4px 10px; border-radius:4px;
+  flex-shrink:0;
+}
+.step-agent-name {
+  font-weight:700; font-size:16px; flex:1;
+}
+.step-timing {
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px; color:var(--muted);
+}
+.step-chevron {
+  color:var(--muted); font-size:14px;
+  transition:transform 0.3s;
+}
+.step-card.open .step-chevron { transform:rotate(180deg); }
+
+.step-body {
+  display:none;
+  padding:24px;
+}
+.step-card.open .step-body { display:block; }
+
+/* Input / Output panels */
+.io-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+@media(max-width:600px){ .io-grid { grid-template-columns:1fr; } }
+
+.io-panel {
+  border-radius:10px; padding:16px;
+  border:1px solid;
+}
+.io-panel.input-panel { background:#f8faff; border-color:#bfdbfe; }
+.io-panel.output-panel { background:#f0fdf8; border-color:#99f6e4; }
+
+.io-label {
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; letter-spacing:2px;
+  text-transform:uppercase; margin-bottom:10px;
+  display:flex; align-items:center; gap:6px;
+}
+.io-label.in { color:var(--blue); }
+.io-label.out { color:var(--teal); }
+
+/* Code block */
+.code-block {
+  background: var(--ink);
+  color:#e2e8f0;
+  border-radius:8px;
+  padding:14px 16px;
+  font-family:'JetBrains Mono',monospace;
+  font-size:12px; line-height:1.7;
+  margin:12px 0;
+  overflow-x:auto;
+  position:relative;
+}
+.code-block .kw { color:#7dd3fc; }
+.code-block .str { color:#86efac; }
+.code-block .cmt { color:#64748b; font-style:italic; }
+.code-block .fn { color:#fbbf24; }
+.code-block .num { color:#f9a8d4; }
+.code-block-label {
+  position:absolute; top:8px; right:12px;
+  font-size:9px; color:#475569; letter-spacing:1px;
+}
+
+/* Reasoning trace */
+.reasoning-trace {
+  background:#fafaf8;
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:14px 16px;
+  margin:12px 0;
+}
+.trace-title {
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; color:var(--violet);
+  letter-spacing:2px; margin-bottom:10px;
+}
+.trace-line {
+  display:flex; gap:10px; align-items:flex-start;
+  padding:5px 0;
+  border-bottom:1px solid var(--border);
+  font-size:13px; line-height:1.5;
+}
+.trace-line:last-child { border-bottom:none; }
+.trace-icon { flex-shrink:0; font-size:14px; }
+.trace-text { color:var(--ink2); }
+.trace-text b { color:var(--ink); }
+
+/* Result table */
+.result-table {
+  width:100%; border-collapse:collapse;
+  font-size:12px; margin:12px 0;
+  border-radius:8px; overflow:hidden;
+  border:1px solid var(--border);
+}
+.result-table th {
+  background:var(--ink);
+  color:#fff;
+  padding:8px 12px;
+  text-align:left;
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; letter-spacing:1px;
+  font-weight:500;
+}
+.result-table td {
+  padding:8px 12px;
+  border-bottom:1px solid var(--border);
+  color:var(--ink2);
+}
+.result-table tr:last-child td { border-bottom:none; }
+.result-table tr:nth-child(even) td { background:#f8f9fb; }
+.badge-risk { padding:2px 8px; border-radius:20px; font-size:10px; font-weight:600; }
+.badge-high { background:#fee2e2; color:#dc2626; }
+.badge-med  { background:#fef3c7; color:#d97706; }
+
+/* Audit entry */
+.audit-entry {
+  background:#0f172a;
+  border-radius:8px;
+  padding:14px 16px;
+  font-family:'JetBrains Mono',monospace;
+  font-size:11px; line-height:1.8;
+  color:#94a3b8;
+  margin:12px 0;
+}
+.audit-entry .ak { color:#7dd3fc; }
+.audit-entry .av { color:#86efac; }
+.audit-entry .ah { color:#fbbf24; }
+
+/* Final answer */
+.final-answer {
+  background: linear-gradient(135deg, #0f766e, #1e40af);
+  border-radius:12px;
+  padding:24px;
+  color:#fff;
+  margin:16px 0;
+}
+.final-answer-label {
+  font-family:'JetBrains Mono',monospace;
+  font-size:10px; letter-spacing:3px;
+  color:#5eead4; margin-bottom:12px;
+}
+.final-answer h3 { font-size:18px; font-weight:700; margin-bottom:10px; }
+.final-answer p { font-size:14px; line-height:1.7; color:#e0f2fe; margin-bottom:8px; }
+.answer-stat {
+  display:inline-flex; align-items:center; gap:6px;
+  background:#ffffff15; border-radius:6px;
+  padding:6px 12px; margin:4px 4px 0 0;
+  font-size:13px; font-weight:600;
+}
+
+/* Confidence badge */
+.confidence {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:5px 12px; border-radius:6px;
+  font-size:12px; font-weight:600;
+  font-family:'JetBrains Mono',monospace;
+}
+.confidence.high { background:var(--green-light); color:var(--green); }
+.confidence.med  { background:var(--amber-light); color:var(--amber); }
+
+/* Step connector */
+.step-connector {
+  display:flex; align-items:center; justify-content:center;
+  gap:6px; padding:6px 0;
+  color:var(--muted); font-size:11px;
+  font-family:'JetBrains Mono',monospace;
+}
+.step-connector::before,.step-connector::after {
+  content:'';width:40px;height:1px;background:var(--border);
+}
+
+/* Nav buttons */
+.nav-row {
+  display:flex; gap:12px; justify-content:center;
+  margin:32px 0 0;
+  position:sticky; bottom:24px;
+}
+.btn {
+  padding:12px 28px; border-radius:8px;
+  font-family:'Outfit',sans-serif;
+  font-size:14px; font-weight:600;
+  border:none; cursor:pointer;
+  transition:all 0.2s;
+  display:flex; align-items:center; gap:8px;
+}
+.btn-primary {
+  background:var(--ink);
+  color:#fff;
+}
+.btn-primary:hover { background:var(--teal); transform:translateY(-1px); }
+.btn-secondary {
+  background:var(--paper);
+  color:var(--ink);
+  border:1px solid var(--border);
+}
+.btn-secondary:hover { border-color:var(--ink); }
+.btn:disabled { opacity:0.4; cursor:not-allowed; transform:none !important; }
+
+/* Tag pills */
+.pill {
+  display:inline-block;
+  padding:3px 9px; border-radius:20px;
+  font-size:11px; font-weight:600;
+  margin:2px;
+}
+.pill-teal { background:var(--teal-light); color:var(--teal); }
+.pill-blue { background:var(--blue-light); color:var(--blue); }
+.pill-violet { background:var(--violet-light); color:var(--violet); }
+.pill-amber { background:var(--amber-light); color:var(--amber); }
+.pill-green { background:var(--green-light); color:var(--green); }
+.pill-rose  { background:var(--rose-light); color:var(--rose); }
+
+.section-divider {
+  margin:10px 0 16px;
+  font-size:12px; font-weight:600;
+  color:var(--muted);
+  display:flex; align-items:center; gap:8px;
+}
+.section-divider::after { content:''; flex:1; height:1px; background:var(--border); }
+
+/* animate in */
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(16px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+.step-card.unlocked { animation: fadeUp 0.4s ease forwards; }
+</style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="hero-inner">
+    <div class="hero-badge">▶ LIVE WALKTHROUGH · AGENTIC AI HACKATHON 2026</div>
+    <h1>Watch the Agent<br>Think, Plan & <em>Answer</em></h1>
+    <p class="hero-sub">A real banking query — traced step by step through every agent, every tool call, every decision. Click <strong style="color:#fff">Next Step</strong> to advance the pipeline.</p>
+    <div class="query-bubble">
+      <div class="query-avatar">👤</div>
+      <div class="query-text">
+        <span>"Which borrowers in Mumbai flagged in our fraud reports also have overdue payments &gt;90 days AND pending complaints — show exposure summary."</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- PROGRESS NAV -->
+<div class="progress-nav">
+  <div class="progress-inner" id="progressBar">
+    <!-- filled by JS -->
+  </div>
+</div>
+
+<div class="main">
+
+<!-- STEPS -->
+<div id="stepsContainer"></div>
+
+<!-- NAV -->
+<div class="nav-row">
+  <button class="btn btn-secondary" id="btnPrev" onclick="prevStep()" disabled>← Back</button>
+  <button class="btn btn-primary" id="btnNext" onclick="nextStep()">Next Step →</button>
+</div>
+
+</div><!-- /main -->
+
+<script>
+const STEPS = [
+  {
+    num: "STEP 01",
+    agent: "User Input + Session Init",
+    emoji: "💬",
+    color: "#2563eb",
+    colorLight: "#dbeafe",
+    timing: "t=0ms",
+    input: {
+      label: "User Query (Natural Language)",
+      content: `<div style="font-size:14px;line-height:1.7;color:#1e293b;">
+        <strong>"Which borrowers in Mumbai flagged in our fraud reports also have overdue payments &gt;90 days AND pending complaints — show exposure summary."</strong>
+      </div>`
+    },
+    output: {
+      label: "Session Initialized",
+      content: `<div style="font-size:13px;line-height:1.7;">
+        <span class="pill pill-blue">Session ID: SES-2026-0482</span>
+        <span class="pill pill-teal">User Role: Risk Analyst</span>
+        <span class="pill pill-violet">Branch: Mumbai HQ</span>
+        <span class="pill pill-green">Short-Term Memory: CLEARED</span>
+      </div>`
+    },
+    trace: [
+      { icon:"🔐", text:"<b>Auth check:</b> JWT validated — Role = Risk Analyst, Scope = Mumbai region" },
+      { icon:"🧹", text:"<b>Memory init:</b> Short-term context window cleared (no leakage from prior session)" },
+      { icon:"📝", text:"<b>Query logged:</b> Raw input stored in audit buffer with timestamp 2026-06-01T10:42:11Z" },
+      { icon:"➡️", text:"<b>Handoff:</b> Raw query passed to Intent Agent" }
+    ]
+  },
+  {
+    num: "STEP 02",
+    agent: "Intent Agent — Parse & Classify",
+    emoji: "🧠",
+    color: "#7c3aed",
+    colorLight: "#ede9fe",
+    timing: "t=180ms",
+    input: {
+      label: "Raw Query",
+      content: `<div style="font-size:13px;color:#334155;font-style:italic;">"Which borrowers in Mumbai flagged in fraud reports also have overdue &gt;90 days AND pending complaints..."</div>`
+    },
+    output: {
+      label: "Parsed Intent Object",
+      content: `<div class="code-block"><span class="code-block-label">JSON</span>
+<span class="kw">{</span>
+  <span class="str">"query_type"</span>: <span class="fn">"multi_hop_join"</span>,
+  <span class="str">"sources_required"</span>: [
+    <span class="str">"fraud_reports_db"</span>,     <span class="cmt">// unstructured docs</span>
+    <span class="str">"loan_accounts_sql"</span>,    <span class="cmt">// structured SQL</span>
+    <span class="str">"complaints_nosql"</span>      <span class="cmt">// NoSQL store</span>
+  ],
+  <span class="str">"filters"</span>: <span class="kw">{</span>
+    <span class="str">"city"</span>: <span class="str">"Mumbai"</span>,
+    <span class="str">"overdue_days"</span>: <span class="str">"&gt;90"</span>,
+    <span class="str">"has_complaint"</span>: <span class="num">true</span>,
+    <span class="str">"fraud_flagged"</span>: <span class="num">true</span>
+  <span class="kw">}</span>,
+  <span class="str">"output_type"</span>: <span class="str">"exposure_summary"</span>,
+  <span class="str">"ambiguity_score"</span>: <span class="num">0.08</span>  <span class="cmt">// low — query is clear</span>
+<span class="kw">}</span></div>`
+    },
+    trace: [
+      { icon:"🔍", text:"<b>Entity extraction:</b> city=Mumbai, condition1=fraud_flagged, condition2=overdue>90d, condition3=has_complaint" },
+      { icon:"🗂️", text:"<b>Query type:</b> Classified as MULTI-HOP JOIN — requires 3 sources to be joined on borrower_id" },
+      { icon:"✅", text:"<b>Ambiguity check:</b> Score 0.08 — below threshold 0.3, no clarification needed" },
+      { icon:"📐", text:"<b>Context pipeline triggered:</b> System → Domain → Task → User layers assembled" }
+    ]
+  },
+  {
+    num: "STEP 03",
+    agent: "Context Engineering Pipeline",
+    emoji: "🗂️",
+    color: "#d97706",
+    colorLight: "#fef3c7",
+    timing: "t=290ms",
+    input: {
+      label: "Intent Object + User Role",
+      content: `<div style="font-size:13px;color:#334155;">Query type: <b>multi_hop_join</b> | Role: <b>Risk Analyst</b> | Region: <b>Mumbai</b></div>`
+    },
+    output: {
+      label: "Assembled Context (4 Layers)",
+      content: `<div class="code-block"><span class="code-block-label">CONTEXT PIPELINE</span>
+<span class="kw">[SYSTEM]</span>   <span class="cmt">DB schema: loans, complaints, fraud_flags tables</span>
+           <span class="cmt">Compliance rules: RBI IRACP norms, NPA classification</span>
+
+<span class="kw">[DOMAIN]</span>   <span class="cmt">Banking domain: overdue = DPD > 90 maps to NPA Sub-Standard</span>
+           <span class="cmt">Fraud: SARFAESI Act flags apply</span>
+           <span class="cmt">Exposure = outstanding_principal + accrued_interest</span>
+
+<span class="kw">[TASK]</span>     <span class="cmt">Multi-hop: fraud_reports → loan_accounts → complaints</span>
+           <span class="cmt">Join key: borrower_id (UUID)</span>
+           <span class="cmt">Output: aggregated exposure table</span>
+
+<span class="kw">[USER]</span>     <span class="cmt">Role: Risk Analyst — READ access Mumbai region only</span>
+           <span class="cmt">No PII fields (Aadhaar, PAN) in output — masked</span></div>`
+    },
+    trace: [
+      { icon:"📚", text:"<b>Schema fetched:</b> loans(borrower_id, dpd, outstanding_amt, branch), complaints(borrower_id, status), fraud_flags(borrower_id, flag_type, flag_date)" },
+      { icon:"⚖️", text:"<b>Domain rule applied:</b> DPD > 90 = NPA Sub-Standard per RBI IRACP — added to context" },
+      { icon:"🔒", text:"<b>PII masking rule injected:</b> Aadhaar + PAN fields excluded from query output" },
+      { icon:"🗺️", text:"<b>Join plan identified:</b> fraud_flags ⟕ loans ⟕ complaints on borrower_id" }
+    ]
+  },
+  {
+    num: "STEP 04",
+    agent: "Source Router + Tool Selector",
+    emoji: "🗺️",
+    color: "#0d9488",
+    colorLight: "#ccfbf1",
+    timing: "t=370ms",
+    input: {
+      label: "Context Pipeline Output",
+      content: `<div style="font-size:13px;color:#334155;">Sources needed: <b>fraud_reports</b> (vector), <b>loan_accounts</b> (SQL), <b>complaints</b> (NoSQL)</div>`
+    },
+    output: {
+      label: "Tool Dispatch Plan",
+      content: `<div class="code-block"><span class="code-block-label">DISPATCH PLAN</span>
+<span class="fn">Tool 1:</span> <span class="str">vector_search</span>
+  → index: fraud_reports_2026
+  → query: <span class="str">"Mumbai borrower fraud flag"</span>
+  → top_k: <span class="num">50</span>, min_score: <span class="num">0.78</span>
+
+<span class="fn">Tool 2:</span> <span class="str">sql_execute</span>
+  → db: core_banking_pg
+  → filter: branch=Mumbai, DPD&gt;90
+  → fields: borrower_id, outstanding_amt, dpd
+
+<span class="fn">Tool 3:</span> <span class="str">nosql_query</span>
+  → collection: complaints_mongo
+  → filter: city=Mumbai, status=OPEN
+  → fields: borrower_id, complaint_type
+
+<span class="cmt">Execution: PARALLEL (Tools 2 + 3) → then join with Tool 1 results</span>
+<span class="cmt">Least-privilege: READ-ONLY, Mumbai scope, no PII fields</span></div>`
+    },
+    trace: [
+      { icon:"⚡", text:"<b>Parallel plan:</b> SQL + NoSQL queries can run simultaneously, vector search first to get fraud borrower IDs" },
+      { icon:"🔐", text:"<b>Privilege check:</b> All 3 tools within analyst's READ scope — approved" },
+      { icon:"🔌", text:"<b>MCP connectors selected:</b> core_banking_mcp, complaints_mcp, fraud_vector_mcp — all on-prem" },
+      { icon:"📋", text:"<b>JSON schema validation:</b> Output schemas registered for downstream type-checking" }
+    ]
+  },
+  {
+    num: "STEP 05",
+    agent: "Query Generation Agents",
+    emoji: "⚙️",
+    color: "#2563eb",
+    colorLight: "#dbeafe",
+    timing: "t=410ms",
+    input: {
+      label: "Dispatch Plan + Context",
+      content: `<div style="font-size:13px;color:#334155;">3 tools to generate queries for — SQL, RAG, NoSQL</div>`
+    },
+    output: {
+      label: "Generated Queries",
+      content: `<div class="code-block"><span class="code-block-label">SQL — Text-to-SQL Agent</span>
+<span class="kw">SELECT</span> borrower_id, borrower_name, outstanding_amt,
+       dpd, branch, account_type
+<span class="kw">FROM</span>   loans
+<span class="kw">WHERE</span>  branch = <span class="str">'Mumbai'</span>
+  <span class="kw">AND</span>  dpd <span class="kw">></span> <span class="num">90</span>
+  <span class="kw">AND</span>  status = <span class="str">'ACTIVE'</span>
+<span class="kw">LIMIT</span>  <span class="num">500</span>;  <span class="cmt">-- row-limit enforced</span></div>
+<div class="code-block" style="margin-top:8px"><span class="code-block-label">NoSQL — MongoDB</span>
+<span class="kw">db</span>.complaints.<span class="fn">find</span>(<span class="kw">{</span>
+  <span class="str">"city"</span>: <span class="str">"Mumbai"</span>,
+  <span class="str">"status"</span>: <span class="str">"OPEN"</span>
+<span class="kw">}</span>, <span class="kw">{</span> <span class="str">"borrower_id"</span>:<span class="num">1</span>, <span class="str">"complaint_type"</span>:<span class="num">1</span> <span class="kw">}</span>)</div>`
+    },
+    trace: [
+      { icon:"🤖", text:"<b>Text-to-SQL Agent:</b> Generated parameterized SQL — validated against schema, no injection risk" },
+      { icon:"📐", text:"<b>Schema alignment check:</b> All column names verified against live schema — 0 mismatches" },
+      { icon:"🔍", text:"<b>RAG query:</b> Embedding generated for 'Mumbai borrower fraud flag' using BAAI/bge-m3" },
+      { icon:"✅", text:"<b>JSON schema locked:</b> Output types bound — downstream validator will enforce types" }
+    ]
+  },
+  {
+    num: "STEP 06",
+    agent: "MCP Execution — Tool Calls Fire",
+    emoji: "🔥",
+    color: "#e11d48",
+    colorLight: "#fff1f2",
+    timing: "t=450ms → 890ms",
+    input: {
+      label: "3 Validated Queries",
+      content: `<div style="font-size:13px;color:#334155;">SQL + NoSQL (parallel) + Vector Search — via on-prem MCP connectors</div>`
+    },
+    output: {
+      label: "Raw Results Received",
+      content: `<div style="font-size:13px;line-height:2;">
+        <span class="pill pill-blue">SQL → 38 rows (overdue loans Mumbai)</span><br>
+        <span class="pill pill-violet">NoSQL → 61 complaints (OPEN, Mumbai)</span><br>
+        <span class="pill pill-amber">Vector → 24 fraud-flagged borrower IDs (score ≥ 0.78)</span>
+      </div>`
+    },
+    trace: [
+      { icon:"🔌", text:"<b>core_banking_mcp:</b> SQL executed in 187ms — 38 rows returned, PAN/Aadhaar columns auto-masked" },
+      { icon:"🔌", text:"<b>complaints_mcp:</b> MongoDB query executed in 134ms — 61 open complaints returned" },
+      { icon:"🔌", text:"<b>fraud_vector_mcp:</b> Semantic search completed in 290ms — 24 borrower IDs above threshold" },
+      { icon:"📋", text:"<b>Audit write:</b> All 3 tool calls logged — connector, query hash, row count, latency, timestamp" }
+    ]
+  },
+  {
+    num: "STEP 07",
+    agent: "Multi-Hop Join + Validator Agent",
+    emoji: "🔍",
+    color: "#16a34a",
+    colorLight: "#dcfce7",
+    timing: "t=910ms",
+    input: {
+      label: "3 Raw Result Sets",
+      content: `<div style="font-size:13px;color:#334155;">38 loan rows + 61 complaints + 24 fraud IDs → join on borrower_id</div>`
+    },
+    output: {
+      label: "Validated Joined Dataset — 7 Borrowers Match ALL 3 Conditions",
+      content: `<table class="result-table">
+        <tr><th>Borrower</th><th>DPD</th><th>Exposure (₹L)</th><th>Fraud Type</th><th>Complaint</th><th>Risk</th></tr>
+        <tr><td>BRW-4821</td><td>143</td><td>₹84.2L</td><td>Diversion</td><td>Recovery Dispute</td><td><span class="badge-risk badge-high">HIGH</span></td></tr>
+        <tr><td>BRW-2907</td><td>118</td><td>₹61.5L</td><td>KYC Fraud</td><td>EMI Dispute</td><td><span class="badge-risk badge-high">HIGH</span></td></tr>
+        <tr><td>BRW-6634</td><td>97</td><td>₹47.8L</td><td>Income Inflation</td><td>Harassment</td><td><span class="badge-risk badge-med">MED</span></td></tr>
+        <tr><td>BRW-1155</td><td>201</td><td>₹112.0L</td><td>Diversion</td><td>Legal Notice</td><td><span class="badge-risk badge-high">HIGH</span></td></tr>
+        <tr><td style="color:#94a3b8" colspan="6">+ 3 more rows...</td></tr>
+      </table>
+      <span class="confidence high">✓ Confidence: 94% — all 3 sources corroborated</span>`
+    },
+    trace: [
+      { icon:"🔗", text:"<b>Inner join:</b> fraud_ids ∩ loan_rows ∩ complaints on borrower_id → 7 exact matches" },
+      { icon:"✅", text:"<b>Type validation:</b> All output fields match registered JSON schema — 0 type errors" },
+      { icon:"🧮", text:"<b>Sanity check:</b> 7 of 38 overdue = 18.4% fraud overlap — within expected range, flagged as notable" },
+      { icon:"🛡️", text:"<b>Hallucination guard:</b> Every borrower ID traceable to source row — no LLM-generated IDs in output" },
+      { icon:"📊", text:"<b>Confidence score:</b> 94% — all 3 independent sources confirm each match" }
+    ]
+  },
+  {
+    num: "STEP 08",
+    agent: "Synthesis Agent — Final Answer",
+    emoji: "📊",
+    color: "#0d9488",
+    colorLight: "#ccfbf1",
+    timing: "t=1140ms",
+    input: {
+      label: "Validated Dataset + Context",
+      content: `<div style="font-size:13px;color:#334155;">7-row joined dataset + domain context (RBI IRACP, exposure calc)</div>`
+    },
+    output: {
+      label: "Natural Language Answer + Summary",
+      content: `<div class="final-answer">
+        <div class="final-answer-label">▸ AGENT RESPONSE</div>
+        <h3>7 Borrowers in Mumbai Meet All 3 Risk Conditions</h3>
+        <p>I found <strong>7 borrowers</strong> in the Mumbai region who are simultaneously <strong>fraud-flagged</strong>, have <strong>overdue payments exceeding 90 days (DPD)</strong>, and have <strong>open complaints</strong> on record.</p>
+        <p>Their combined exposure is <strong>₹5.84 Crore</strong>. Four are classified HIGH risk — including BRW-1155 with ₹1.12Cr exposure and 201 DPD. All qualify as NPA Sub-Standard under RBI IRACP norms.</p>
+        <div style="margin-top:14px;">
+          <span class="answer-stat">🏦 7 borrowers matched</span>
+          <span class="answer-stat">💰 ₹5.84 Cr total exposure</span>
+          <span class="answer-stat">⚠️ 4 HIGH risk</span>
+          <span class="answer-stat">📋 RBI NPA: Sub-Standard</span>
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--muted);">
+        💾 Stored in short-term memory for follow-up queries &nbsp;|&nbsp; 
+        📎 Sources: core_banking_pg, complaints_mongo, fraud_reports_vector
+      </div>`
+    },
+    trace: [
+      { icon:"🧩", text:"<b>Merge complete:</b> SQL table + complaint types + fraud categories synthesized into unified answer" },
+      { icon:"📖", text:"<b>Domain language applied:</b> DPD>90 → 'NPA Sub-Standard' per RBI IRACP (from long-term memory)" },
+      { icon:"💾", text:"<b>Short-term memory updated:</b> Result set + query plan saved for potential follow-up ('show only HIGH risk', 'export to PDF')" },
+      { icon:"✅", text:"<b>PII confirmed masked:</b> No Aadhaar/PAN in final output — compliance preserved" }
+    ]
+  },
+  {
+    num: "STEP 09",
+    agent: "Audit Log + Data Lineage",
+    emoji: "📋",
+    color: "#475569",
+    colorLight: "#f1f5f9",
+    timing: "t=1180ms",
+    input: {
+      label: "Complete Execution Trace",
+      content: `<div style="font-size:13px;color:#334155;">All 8 prior steps — tool calls, results, decisions, timing</div>`
+    },
+    output: {
+      label: "Immutable Audit Record Written",
+      content: `<div class="audit-entry">
+<span class="ak">audit_id     </span>: <span class="av">AUD-2026-06-01-004821</span>
+<span class="ak">session_id   </span>: <span class="av">SES-2026-0482</span>
+<span class="ak">user_role    </span>: <span class="av">risk_analyst / mumbai</span>
+<span class="ak">query_hash   </span>: <span class="ah">sha256:a3f8c2...d91b</span>
+<span class="ak">tools_called </span>: <span class="av">vector_search, sql_execute, nosql_query</span>
+<span class="ak">sources      </span>: <span class="av">fraud_reports_vector, core_banking_pg, complaints_mongo</span>
+<span class="ak">rows_returned</span>: <span class="av">38 + 61 + 24 → 7 (post-join)</span>
+<span class="ak">exposure_ttl </span>: <span class="av">₹5.84 Cr</span>
+<span class="ak">pii_masked   </span>: <span class="av">true (aadhaar, pan)</span>
+<span class="ak">confidence   </span>: <span class="av">0.94</span>
+<span class="ak">total_latency</span>: <span class="av">1180ms</span>
+<span class="ak">lineage      </span>: <span class="av">fraud_flags.borrower_id → loans.borrower_id → complaints.borrower_id</span>
+<span class="ak">timestamp    </span>: <span class="av">2026-06-01T10:42:12.180Z</span>
+<span class="ak">immutable    </span>: <span class="av">true (append-only log)</span></div>`
+    },
+    trace: [
+      { icon:"🔒", text:"<b>Append-only write:</b> Audit record written to immutable log — cannot be modified or deleted" },
+      { icon:"🗺️", text:"<b>Lineage chain:</b> fraud_flags → loans → complaints — every hop recorded with join key" },
+      { icon:"♻️", text:"<b>Replayable:</b> Query can be replayed at any time using query_hash for compliance investigation" },
+      { icon:"✅", text:"<b>Compliance confirmed:</b> PII masking, role-scope, least-privilege — all verified and logged" }
+    ]
+  }
+];
+
+let current = 0;
+
+function buildProgressBar() {
+  const bar = document.getElementById('progressBar');
+  bar.innerHTML = STEPS.map((s,i) => `
+    <div class="prog-step ${i===0?'active':''}" data-i="${i}" onclick="goToStep(${i})" title="${s.agent}">
+      <div class="prog-step-num">${i+1}</div>
+    </div>
+  `).join('') + `<div class="prog-label" id="progLabel">STEP 1/${STEPS.length}</div>`;
+}
+
+function buildSteps() {
+  const c = document.getElementById('stepsContainer');
+  c.innerHTML = STEPS.map((s,i) => `
+    ${i>0?`<div class="step-connector">↓ output passed to next agent</div>`:''}
+    <div class="step-wrapper">
+      <div class="step-card ${i===0?'unlocked open active-card':''}" id="card-${i}">
+        <div class="step-header-bar" onclick="toggleCard(${i})">
+          <div class="step-num" style="background:${s.colorLight};color:${s.color}">${s.num}</div>
+          <div style="font-size:20px">${s.emoji}</div>
+          <div class="step-agent-name">${s.agent}</div>
+          <div class="step-timing">${s.timing}</div>
+          <div class="step-chevron">▾</div>
+        </div>
+        <div class="step-body">
+          <div class="io-grid">
+            <div class="io-panel input-panel">
+              <div class="io-label in">▸ INPUT</div>
+              <div class="io-label-sub" style="font-size:11px;color:#3b82f6;margin-bottom:8px;font-family:'JetBrains Mono',monospace;">${s.input.label}</div>
+              ${s.input.content}
+            </div>
+            <div class="io-panel output-panel">
+              <div class="io-label out">▸ OUTPUT</div>
+              <div class="io-label-sub" style="font-size:11px;color:#0d9488;margin-bottom:8px;font-family:'JetBrains Mono',monospace;">${s.output.label}</div>
+              ${s.output.content}
+            </div>
+          </div>
+          <div class="reasoning-trace">
+            <div class="trace-title">◈ AGENT REASONING TRACE</div>
+            ${s.trace.map(t=>`
+              <div class="trace-line">
+                <div class="trace-icon">${t.icon}</div>
+                <div class="trace-text">${t.text}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function updateProgress() {
+  const steps = document.querySelectorAll('.prog-step');
+  steps.forEach((s,i) => {
+    s.className = 'prog-step';
+    if(i < current) s.classList.add('done');
+    else if(i === current) s.classList.add('active');
+  });
+  document.getElementById('progLabel').textContent = `STEP ${current+1}/${STEPS.length}`;
+  document.getElementById('btnPrev').disabled = current === 0;
+  document.getElementById('btnNext').disabled = current === STEPS.length - 1;
+  document.getElementById('btnNext').textContent = current === STEPS.length-1 ? '✓ Complete' : 'Next Step →';
+}
+
+function goToStep(i) {
+  // unlock all up to i
+  for(let j=0; j<=i; j++) {
+    const card = document.getElementById(`card-${j}`);
+    card.classList.add('unlocked');
+    if(j < i) { card.classList.remove('open','active-card'); }
+    if(j === i) { card.classList.add('open','active-card'); }
+  }
+  current = i;
+  updateProgress();
+  setTimeout(()=>{ document.getElementById(`card-${i}`).scrollIntoView({behavior:'smooth', block:'center'}); },100);
+}
+
+function nextStep() {
+  if(current >= STEPS.length-1) return;
+  const prev = document.getElementById(`card-${current}`);
+  prev.classList.remove('active-card');
+  current++;
+  const card = document.getElementById(`card-${current}`);
+  card.classList.add('unlocked','open','active-card');
+  updateProgress();
+  setTimeout(()=>{ card.scrollIntoView({behavior:'smooth', block:'start'}); },100);
+}
+
+function prevStep() {
+  if(current <= 0) return;
+  const curr = document.getElementById(`card-${current}`);
+  curr.classList.remove('active-card','open');
+  current--;
+  const card = document.getElementById(`card-${current}`);
+  card.classList.add('active-card','open');
+  updateProgress();
+  setTimeout(()=>{ card.scrollIntoView({behavior:'smooth', block:'start'}); },100);
+}
+
+function toggleCard(i) {
+  const card = document.getElementById(`card-${i}`);
+  if(!card.classList.contains('unlocked')) return;
+  card.classList.toggle('open');
+}
+
+buildProgressBar();
+buildSteps();
+updateProgress();
+</script>
+</body>
+</html>
